@@ -5,7 +5,6 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Avatar, AvatarFallback } from './ui/avatar';
-import { Separator } from './ui/separator';
 import { Textarea } from './ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { 
@@ -23,46 +22,65 @@ import { supabase } from '@/lib/supaBaseClient';
 
 const AbsenceControlPanel = () => {
   const [requests, setRequests] = useState<AbsenceRequest[]>([]);
-  const [selectedRequest, setSelectedRequest] = useState<AbsenceRequest | null>(null);
   const [adminResponse, setAdminResponse] = useState('');
 
   // --- FETCH FROM SUPABASE ---
   useEffect(() => {
     const fetchAbsences = async () => {
-      const { data, error } = await supabase
-        .from('absences')
-        .select(`
-          id,
-          employee_id,
-          start_date,
-          end_date,
-          reason,
-          message,
-          status,
-          submitted_at,
-          employees:employees ( name )
-        `)
-        .order('submitted_at', { ascending: false });
+const { data, error } = await supabase
+  .from('absences')
+  .select(`
+    id,
+    employee_id,
+    start_date,
+    end_date,
+    reason,
+    message,
+    status,
+    submitted_at,
+    employees:employees!absences_employee_id_fkey ( name )
+  `)
+  .order('submitted_at', { ascending: false });
 
-      if (error) {
-        console.error(error);
-        toast.error('Poissaolojen haku epäonnistui');
-        return;
-      }
+if (error) {
+  console.error(error);
+  toast.error('Poissaolojen haku epäonnistui');
+  return;
+}
 
-      const mapped: AbsenceRequest[] = (data ?? []).map((r: any) => ({
-        id: r.id,
-        employeeId: r.employee_id,
-        employeeName: r.employees?.name ?? 'Tuntematon',
-        startDate: r.start_date,
-        endDate: r.end_date,
-        reason: r.reason ?? '',
-        status: r.status,
-        submittedAt: r.submitted_at,
-        message: r.message ?? '',
-      }));
+type AbsenceRow = {
+  id: string;
+  employee_id: string;
+  start_date: string;
+  end_date: string | null;
+  reason: string | null;
+  message: string | null;
+  status: 'pending' | 'approved' | 'declined';
+  submitted_at: string;
+  employees?: { name: string }[] | { name: string } | null;
+};
+
+const mapped: AbsenceRequest[] = (data as AbsenceRow[]).map((r) => {
+  const employeeName = Array.isArray(r.employees)
+    ? r.employees[0]?.name
+    : r.employees?.name;
+
+  return {
+    id: r.id,
+    employeeId: r.employee_id,
+    employeeName: employeeName ?? 'Tuntematon',
+    startDate: r.start_date,
+    endDate: r.end_date ?? '',
+    reason: r.reason ?? '',
+    status: r.status,
+    submittedAt: r.submitted_at,
+    message: r.message ?? '',
+  };
+});
+
 
       setRequests(mapped);
+      
     };
 
     fetchAbsences();
@@ -198,7 +216,6 @@ const AbsenceControlPanel = () => {
                       <DialogTrigger asChild>
                         <div
                           className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3 cursor-pointer"
-                          onClick={() => setSelectedRequest(request)}
                         >
                           <MessageSquare className="w-4 h-4 mr-2" />
                           Vastaa

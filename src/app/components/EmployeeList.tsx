@@ -71,7 +71,17 @@ const EmployeeList = () => {
         toast.error("Työntekijöiden haku epäonnistui");
       } else {
         // Mapataan snake_case -> camelCase
-        const mapped: Employee[] = (data ?? []).map((row: any) => ({
+
+          type EmployeeRow = {
+          id: string;
+          name: string;
+          email: string;
+          department: string;
+          is_active: boolean;
+          created_at: string; // tai Date, jos haluat käsitellä sitä
+          };
+
+          const mapped: Employee[] = (data ?? []).map((row: EmployeeRow) => ({
           id: row.id,
           name: row.name,
           email: row.email,
