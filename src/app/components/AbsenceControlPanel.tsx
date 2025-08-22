@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -19,61 +19,56 @@ import {
 } from 'lucide-react';
 import { AbsenceRequest } from '../types';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supaBaseClient';
 
 const AbsenceControlPanel = () => {
-  const [requests, setRequests] = useState<AbsenceRequest[]>([
-    {
-      id: '1',
-      employeeId: '1',
-      employeeName: 'Maija Virtanen',
-      startDate: '2024-08-26',
-      endDate: '2024-08-30',
-      reason: 'Henkilökohtainen asia',
-      status: 'pending',
-      submittedAt: '2024-08-20T10:30:00',
-      message: 'Tarvitsen vapaata perhesyistä.'
-    },
-    {
-      id: '2',
-      employeeId: '3',
-      employeeName: 'Liisa Koskinen',
-      startDate: '2024-08-28',
-      endDate: '2024-08-28',
-      reason: 'Lääkäriaika',
-      status: 'pending',
-      submittedAt: '2024-08-21T14:15:00',
-      message: 'Erikoislääkärin aika, jota ei voinut siirtää.'
-    },
-    {
-      id: '3',
-      employeeId: '2',
-      employeeName: 'Pekka Mäkinen',
-      startDate: '2024-08-23',
-      endDate: '2024-08-25',
-      reason: 'Sairausloma',
-      status: 'approved',
-      submittedAt: '2024-08-19T08:45:00',
-      message: 'Flunssa, lääkärintodistus toimitettu.'
-    }
-  ]);
-
+  const [requests, setRequests] = useState<AbsenceRequest[]>([]);
   const [selectedRequest, setSelectedRequest] = useState<AbsenceRequest | null>(null);
   const [adminResponse, setAdminResponse] = useState('');
 
-  const handleApprove = (requestId: string) => {
-    setRequests(prev => prev.map(req => 
-      req.id === requestId ? { ...req, status: 'approved' as const } : req
-    ));
-    toast.success('Poissaolopyyntö hyväksytty');
-  };
+  // --- FETCH FROM SUPABASE ---
+  useEffect(() => {
+    const fetchAbsences = async () => {
+      const { data, error } = await supabase
+        .from('absences')
+        .select(`
+          id,
+          employee_id,
+          start_date,
+          end_date,
+          reason,
+          message,
+          status,
+          submitted_at,
+          employees:employees ( name )
+        `)
+        .order('submitted_at', { ascending: false });
 
-  const handleDecline = (requestId: string) => {
-    setRequests(prev => prev.map(req => 
-      req.id === requestId ? { ...req, status: 'declined' as const } : req
-    ));
-    toast.success('Poissaolopyyntö hylätty');
-  };
+      if (error) {
+        console.error(error);
+        toast.error('Poissaolojen haku epäonnistui');
+        return;
+      }
 
+      const mapped: AbsenceRequest[] = (data ?? []).map((r: any) => ({
+        id: r.id,
+        employeeId: r.employee_id,
+        employeeName: r.employees?.name ?? 'Tuntematon',
+        startDate: r.start_date,
+        endDate: r.end_date,
+        reason: r.reason ?? '',
+        status: r.status,
+        submittedAt: r.submitted_at,
+        message: r.message ?? '',
+      }));
+
+      setRequests(mapped);
+    };
+
+    fetchAbsences();
+  }, []);
+
+  // --- STATUS HELPERS (UI) ---
   const getStatusBadge = (status: AbsenceRequest['status']) => {
     switch (status) {
       case 'pending':
@@ -85,10 +80,39 @@ const AbsenceControlPanel = () => {
     }
   };
 
+  // --- SUPABASE UPDATES ---
+  const handleApprove = async (requestId: string) => {
+    // Optimistinen päivitys
+    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'approved' } : r));
+    const { error } = await supabase.from('absences').update({ status: 'approved' }).eq('id', requestId);
+    if (error) {
+      console.error(error);
+      // revert
+      setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
+      toast.error('Hyväksyntä epäonnistui');
+      return;
+    }
+    toast.success('Poissaolopyyntö hyväksytty');
+  };
+
+  const handleDecline = async (requestId: string) => {
+    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
+    const { error } = await supabase.from('absences').update({ status: 'declined' }).eq('id', requestId);
+    if (error) {
+      console.error(error);
+      setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
+      toast.error('Hylkäys epäonnistui');
+      return;
+    }
+    toast.success('Poissaolopyyntö hylätty');
+  };
+
+  // --- DERIVED LISTS (UI pysyy samana) ---
   const pendingRequests = requests.filter(req => req.status === 'pending');
   const processedRequests = requests.filter(req => req.status !== 'pending');
 
   const formatDate = (dateString: string) => {
+    if (!dateString) return '';
     return new Date(dateString).toLocaleDateString('fi-FI', {
       day: 'numeric',
       month: 'numeric',
@@ -97,6 +121,7 @@ const AbsenceControlPanel = () => {
   };
 
   const formatDateTime = (dateString: string) => {
+    if (!dateString) return '';
     return new Date(dateString).toLocaleDateString('fi-FI', {
       day: 'numeric',
       month: 'numeric',
@@ -133,7 +158,7 @@ const AbsenceControlPanel = () => {
                   <div className="flex items-start space-x-3 flex-1">
                     <Avatar className="w-10 h-10">
                       <AvatarFallback className="bg-primary text-primary-foreground">
-                        {request.employeeName.split(' ').map(n => n[0]).join('')}
+                        {request.employeeName?.split(' ').map(n => n[0]).join('')}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
@@ -155,7 +180,7 @@ const AbsenceControlPanel = () => {
                         </div>
                         <div className="flex items-center gap-2">
                           <Clock className="w-4 h-4" />
-                          <span>Jätetty: {formatDateTime(request.submittedAt)}</span>
+                          <span>Jätetty: {formatDateTime(request.submittedAt || '')}</span>
                         </div>
                       </div>
                       {request.message && (
@@ -253,7 +278,7 @@ const AbsenceControlPanel = () => {
                 <div className="flex items-center space-x-3">
                   <Avatar className="w-8 h-8">
                     <AvatarFallback className="text-xs">
-                      {request.employeeName.split(' ').map(n => n[0]).join('')}
+                      {request.employeeName?.split(' ').map(n => n[0]).join('')}
                     </AvatarFallback>
                   </Avatar>
                   <div>
