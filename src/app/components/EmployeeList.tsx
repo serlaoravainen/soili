@@ -1,141 +1,234 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Badge } from './ui/badge';
-import { Avatar, AvatarFallback } from './ui/avatar';
-import { Switch } from './ui/switch';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
-import { Label } from './ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { 
-  Users, 
-  Plus, 
-  Edit3, 
-  Trash2, 
+import React, { useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Badge } from "./ui/badge";
+import { Avatar, AvatarFallback } from "./ui/avatar";
+import { Switch } from "./ui/switch";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Label } from "./ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import {
+  Users,
+  Plus,
+  Edit3,
+  Trash2,
   Search,
   UserCheck,
   UserX,
   Mail,
-  Building
-} from 'lucide-react';
-import { Employee } from '../types'
-import { toast } from 'sonner';
+  Building,
+} from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supaBaseClient";
+
+// Sama tyyppi kuin sulla (shifts jätetään tyhjäksi tässä vaiheessa)
+type Employee = {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  isActive: boolean;
+  shifts: Array<unknown>;
+};
 
 const EmployeeList = () => {
-  const [employees, setEmployees] = useState<Employee[]>([
-    {
-      id: '1',
-      name: 'Maija Virtanen',
-      email: 'maija.virtanen@company.com',
-      department: 'Myynti',
-      isActive: true,
-      shifts: []
-    },
-    {
-      id: '2', 
-      name: 'Pekka Mäkinen',
-      email: 'pekka.makinen@company.com',
-      department: 'IT',
-      isActive: true,
-      shifts: []
-    },
-    {
-      id: '3',
-      name: 'Liisa Koskinen', 
-      email: 'liisa.koskinen@company.com',
-      department: 'HR',
-      isActive: true,
-      shifts: []
-    },
-    {
-      id: '4',
-      name: 'Janne Virtala',
-      email: 'janne.virtala@company.com', 
-      department: 'Tuotanto',
-      isActive: false,
-      shifts: []
-    },
-    {
-      id: '5',
-      name: 'Sanna Laakso',
-      email: 'sanna.laakso@company.com',
-      department: 'Myynti', 
-      isActive: true,
-      shifts: []
-    }
-  ]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const [searchTerm, setSearchTerm] = useState('');
+  // Hakusuodatus
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const [customDepartment, setCustomDepartment] = useState("");
+  const [editCustomDepartment, setEditCustomDepartment] = useState("");
+
+  const [creatingNewDept, setCreatingNewDept] = useState(false);
+  const [editCreatingNewDept, setEditCreatingNewDept] = useState(false);
+
+  // Edit/Add dialogit
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [newEmployee, setNewEmployee] = useState({
-    name: '',
-    email: '',
-    department: '',
-    isActive: true
+    name: "",
+    email: "",
+    department: "",
+    isActive: true,
   });
 
-  const filteredEmployees = employees.filter(employee =>
-    employee.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    employee.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    employee.department.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // 1) HAKU DB:stä
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("employees")
+        .select("id, name, email, department, is_active, created_at")
+        .order("created_at", { ascending: true });
 
-  const activeEmployees = employees.filter(emp => emp.isActive).length;
-  const departments = [...new Set(employees.map(emp => emp.department))];
+      if (error) {
+        console.error(error);
+        toast.error("Työntekijöiden haku epäonnistui");
+      } else {
+        // Mapataan snake_case -> camelCase
+        const mapped: Employee[] = (data ?? []).map((row: any) => ({
+          id: row.id,
+          name: row.name,
+          email: row.email,
+          department: row.department,
+          isActive: !!row.is_active,
+          shifts: [], // ei vielä käytössä
+        }));
+        setEmployees(mapped);
+      }
+      setLoading(false);
+    })();
+  }, []);
 
-  const handleToggleActive = (employeeId: string) => {
-    setEmployees(prev => prev.map(emp => 
-      emp.id === employeeId ? { ...emp, isActive: !emp.isActive } : emp
-    ));
-    const employee = employees.find(emp => emp.id === employeeId);
-    toast.success(`${employee?.name} ${employee?.isActive ? 'deaktivoitu' : 'aktivoitu'}`);
-  };
+  // 2) LISÄYS
+async function handleAddEmployee() {
+  const name = newEmployee.name.trim();
+  const email = newEmployee.email.trim();
+  const dep = (newEmployee.department ?? "").trim();
 
-  const handleDeleteEmployee = (employeeId: string) => {
-    const employee = employees.find(emp => emp.id === employeeId);
-    setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
-    toast.success(`${employee?.name} poistettu onnistuneesti`);
-  };
+  if (!name || !email || !dep) {
+    toast.error("Täytä kaikki pakolliset kentät");
+    return;
+  }
+  if (dep.toLowerCase() === "uusi osasto") {
+    toast.error("Kirjoita osaston nimi.");
+    return;
+  }
 
-  const handleAddEmployee = () => {
-    if (!newEmployee.name || !newEmployee.email || !newEmployee.department) {
-      toast.error('Täytä kaikki pakolliset kentät');
+  const { data, error } = await supabase
+    .from("employees")
+    .insert([{
+      name,
+      email,
+      department: dep,
+      is_active: newEmployee.isActive,
+    }])
+    .select("id, name, email, department, is_active, created_at")
+    .single();
+
+    if (error) {
+      console.error(error);
+      toast.error("Lisäys epäonnistui");
       return;
     }
 
-    const employee: Employee = {
-      id: Date.now().toString(),
-      name: newEmployee.name,
-      email: newEmployee.email,
-      department: newEmployee.department,
-      isActive: newEmployee.isActive,
-      shifts: []
+    const added: Employee = {
+      id: data.id,
+      name: data.name,
+      email: data.email,
+      department: data.department,
+      isActive: !!data.is_active,
+      shifts: [],
     };
 
-    setEmployees(prev => [...prev, employee]);
-    setNewEmployee({ name: '', email: '', department: '', isActive: true });
+    setEmployees((prev) => [...prev, added]);
+    setNewEmployee({ name: "", email: "", department: "", isActive: true });
     setIsAddDialogOpen(false);
-    toast.success(`${employee.name} lisätty onnistuneesti`);
-  };
+    toast.success(`${added.name} lisätty`);
+  }
 
-  const handleEditEmployee = (employee: Employee) => {
+  // 3) POISTO
+  async function handleDeleteEmployee(employeeId: string) {
+    const target = employees.find((e) => e.id === employeeId);
+    const { error } = await supabase.from("employees").delete().eq("id", employeeId);
+    if (error) {
+      console.error(error);
+      toast.error("Poisto epäonnistui");
+      return;
+    }
+    setEmployees((prev) => prev.filter((e) => e.id !== employeeId));
+    toast.success(`${target?.name ?? "Työntekijä"} poistettu`);
+  }
+
+  // 4) AKTIIVINEN/EPÄAKTIIVINEN toggle
+  async function handleToggleActive(employeeId: string) {
+    const current = employees.find((e) => e.id === employeeId);
+    if (!current) return;
+
+    const nextActive = !current.isActive;
+    // Optimistic update
+    setEmployees((prev) =>
+      prev.map((e) => (e.id === employeeId ? { ...e, isActive: nextActive } : e))
+    );
+
+    const { error } = await supabase
+      .from("employees")
+      .update({ is_active: nextActive })
+      .eq("id", employeeId);
+
+    if (error) {
+      console.error(error);
+      // Revertoi jos meni pieleen
+      setEmployees((prev) =>
+        prev.map((e) => (e.id === employeeId ? { ...e, isActive: !nextActive } : e))
+      );
+      toast.error("Tilan muutos epäonnistui");
+      return;
+    }
+
+    toast.success(`${current.name} ${nextActive ? "aktivoitu" : "deaktivoitu"}`);
+  }
+
+  // 5) EDIT / UPDATE
+  function handleEditEmployee(employee: Employee) {
     setSelectedEmployee(employee);
-  };
+  }
 
-  const handleUpdateEmployee = () => {
+  async function handleUpdateEmployee() {
     if (!selectedEmployee) return;
 
-    setEmployees(prev => prev.map(emp => 
-      emp.id === selectedEmployee.id ? selectedEmployee : emp
-    ));
-    setSelectedEmployee(null);
-    toast.success('Työntekijätiedot päivitetty');
-  };
+    const { error } = await supabase
+      .from("employees")
+      .update({
+        name: selectedEmployee.name,
+        email: selectedEmployee.email,
+        department: selectedEmployee.department,
+        is_active: selectedEmployee.isActive,
+      })
+      .eq("id", selectedEmployee.id);
 
+    if (error) {
+      console.error(error);
+      toast.error("Päivitys epäonnistui");
+      return;
+    }
+
+    setEmployees((prev) =>
+      prev.map((e) => (e.id === selectedEmployee.id ? selectedEmployee : e))
+    );
+    setSelectedEmployee(null);
+    toast.success("Työntekijätiedot päivitetty");
+  }
+
+  // Johdetut arvot (kuten ennen)
+  const filteredEmployees = useMemo(() => {
+    const q = searchTerm.toLowerCase();
+    return employees.filter(
+      (e) =>
+        e.name.toLowerCase().includes(q) ||
+        e.email.toLowerCase().includes(q) ||
+        e.department.toLowerCase().includes(q)
+    );
+  }, [employees, searchTerm]);
+
+  const activeEmployees = employees.filter((e) => e.isActive).length;
+const departments = useMemo(
+  () =>
+    [...new Set(
+      employees
+        .map(e => (e.department ?? "").trim())
+        .filter(v => v && v.toLowerCase() !== "uusi osasto")
+    )].sort((a, b) => a.localeCompare(b, "fi")),
+  [employees]
+);
+
+
+  // —— UI alla: pidetään sun alkuperäinen rakenne ——
   return (
     <div className="space-y-6">
       <Card className="shadow-lg border-0 bg-gradient-to-r from-background to-secondary/20">
@@ -150,6 +243,7 @@ const EmployeeList = () => {
                 <UserCheck className="w-4 h-4 mr-2" />
                 {activeEmployees} aktiivista
               </Badge>
+
               <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
                 <DialogTrigger asChild>
                   <div
@@ -170,7 +264,9 @@ const EmployeeList = () => {
                       <Input
                         id="name"
                         value={newEmployee.name}
-                        onChange={(e) => setNewEmployee(prev => ({ ...prev, name: e.target.value }))}
+                        onChange={(e) =>
+                          setNewEmployee((p) => ({ ...p, name: e.target.value }))
+                        }
                         placeholder="Etunimi Sukunimi"
                       />
                     </div>
@@ -180,37 +276,78 @@ const EmployeeList = () => {
                         id="email"
                         type="email"
                         value={newEmployee.email}
-                        onChange={(e) => setNewEmployee(prev => ({ ...prev, email: e.target.value }))}
+                        onChange={(e) =>
+                          setNewEmployee((p) => ({ ...p, email: e.target.value }))
+                        }
                         placeholder="etunimi.sukunimi@company.com"
                       />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="department">Osasto *</Label>
-                      <Select value={newEmployee.department} onValueChange={(value) => setNewEmployee(prev => ({ ...prev, department: value }))}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Valitse osasto" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {departments.map(dept => (
-                            <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                          ))}
-                          <SelectItem value="Uusi osasto">+ Uusi osasto</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <Select
+  value={
+    creatingNewDept
+      ? "NEW_DEPT"
+      : (newEmployee.department || "")
+  }
+  onValueChange={(value) => {
+    if (value === "NEW_DEPT") {
+      setCreatingNewDept(true);
+      setCustomDepartment("");
+      setNewEmployee(p => ({ ...p, department: "" })); // puhdas aloitus
+    } else {
+      setCreatingNewDept(false);
+      setCustomDepartment("");
+      setNewEmployee(p => ({ ...p, department: value }));
+    }
+  }}
+>
+  <SelectTrigger>
+    <SelectValue placeholder="Valitse osasto" />
+  </SelectTrigger>
+  <SelectContent>
+    {departments.map((dept) => (
+      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+    ))}
+    <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
+  </SelectContent>
+</Select>
+
+{creatingNewDept && (
+  <Input
+    placeholder="Kirjoita uusi osasto…"
+    className="mt-2"
+    value={customDepartment}
+    onChange={(e) => {
+      const v = e.target.value;
+      setCustomDepartment(v);
+      setNewEmployee(p => ({ ...p, department: v })); // päivitetään arvo, mutta ei piiloteta inputtia
+    }}
+  />
+)}
+
+
+
                     </div>
                     <div className="flex items-center space-x-2">
                       <Switch
                         id="active"
                         checked={newEmployee.isActive}
-                        onCheckedChange={(checked) => setNewEmployee(prev => ({ ...prev, isActive: checked }))}
+                        onCheckedChange={(checked) =>
+                          setNewEmployee((p) => ({ ...p, isActive: checked }))
+                        }
                       />
                       <Label htmlFor="active">Aktiivinen työntekijä</Label>
                     </div>
                     <div className="flex gap-2 pt-4">
-                      <Button onClick={handleAddEmployee} className="flex-1">
+                      <Button onClick={handleAddEmployee} className="flex-1" disabled={loading}>
                         Lisää työntekijä
                       </Button>
-                      <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} className="flex-1">
+                      <Button
+                        variant="outline"
+                        onClick={() => setIsAddDialogOpen(false)}
+                        className="flex-1"
+                      >
                         Peruuta
                       </Button>
                     </div>
@@ -220,6 +357,7 @@ const EmployeeList = () => {
             </div>
           </div>
         </CardHeader>
+
         <CardContent className="space-y-4">
           {/* Search */}
           <div className="relative">
@@ -234,75 +372,93 @@ const EmployeeList = () => {
 
           {/* Employee List */}
           <div className="space-y-3">
-            {filteredEmployees.map((employee) => (
-              <div key={employee.id} className="border border-border rounded-lg p-4 bg-background hover:shadow-md transition-shadow">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <Avatar className="w-12 h-12">
-                      <AvatarFallback className={`${employee.isActive ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}>
-                        {employee.name.split(' ').map(n => n[0]).join('')}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h4 className="font-medium">{employee.name}</h4>
-                        {employee.isActive ? (
-                          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
-                            <UserCheck className="w-3 h-3 mr-1" />
-                            Aktiivinen
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-300">
-                            <UserX className="w-3 h-3 mr-1" />
-                            Ei-aktiivinen
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="space-y-1 text-sm text-muted-foreground">
-                        <div className="flex items-center gap-2">
-                          <Mail className="w-4 h-4" />
-                          <span>{employee.email}</span>
+            {loading ? (
+              <div className="text-center py-8 text-muted-foreground">Ladataan…</div>
+            ) : (
+              filteredEmployees.map((employee) => (
+                <div
+                  key={employee.id}
+                  className="border border-border rounded-lg p-4 bg-background hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <Avatar className="w-12 h-12">
+                        <AvatarFallback
+                          className={`${
+                            employee.isActive
+                              ? "bg-primary text-primary-foreground"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                        >
+                          {employee.name
+                            .split(" ")
+                            .map((n) => n[0])
+                            .join("")}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <h4 className="font-medium">{employee.name}</h4>
+                          {employee.isActive ? (
+                            <Badge
+                              variant="outline"
+                              className="bg-green-50 text-green-700 border-green-300"
+                            >
+                              <UserCheck className="w-3 h-3 mr-1" />
+                              Aktiivinen
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="bg-gray-50 text-gray-700 border-gray-300"
+                            >
+                              <UserX className="w-3 h-3 mr-1" />
+                              Ei-aktiivinen
+                            </Badge>
+                          )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <Building className="w-4 h-4" />
-                          <span>{employee.department}</span>
+                        <div className="space-y-1 text-sm text-muted-foreground">
+                          <div className="flex items-center gap-2">
+                            <Mail className="w-4 h-4" />
+                            <span>{employee.email}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Building className="w-4 h-4" />
+                            <span>{employee.department}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center space-x-2">
-                      <Label htmlFor={`toggle-${employee.id}`} className="text-sm text-muted-foreground">
-                        Aktiivinen
-                      </Label>
-                      <Switch
-                        id={`toggle-${employee.id}`}
-                        checked={employee.isActive}
-                        onCheckedChange={() => handleToggleActive(employee.id)}
-                      />
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center space-x-2">
+                        <Label htmlFor={`toggle-${employee.id}`} className="text-sm text-muted-foreground">
+                          Aktiivinen
+                        </Label>
+                        <Switch
+                          id={`toggle-${employee.id}`}
+                          checked={employee.isActive}
+                          onCheckedChange={() => handleToggleActive(employee.id)}
+                        />
+                      </div>
+                      <Button variant="ghost" size="sm" onClick={() => handleEditEmployee(employee)}>
+                        <Edit3 className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDeleteEmployee(employee.id)}
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleEditEmployee(employee)}
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDeleteEmployee(employee.id)}
-                      className="text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
 
-          {filteredEmployees.length === 0 && (
+          {!loading && filteredEmployees.length === 0 && (
             <div className="text-center py-8 text-muted-foreground">
               <Users className="w-12 h-12 mx-auto mb-4 opacity-50" />
               <p>Ei työntekijöitä hakukriteereillä</p>
@@ -324,7 +480,9 @@ const EmployeeList = () => {
                 <Input
                   id="edit-name"
                   value={selectedEmployee.name}
-                  onChange={(e) => setSelectedEmployee(prev => prev ? { ...prev, name: e.target.value } : null)}
+                  onChange={(e) =>
+                    setSelectedEmployee((p) => (p ? { ...p, name: e.target.value } : p))
+                  }
                 />
               </div>
               <div className="space-y-2">
@@ -333,30 +491,66 @@ const EmployeeList = () => {
                   id="edit-email"
                   type="email"
                   value={selectedEmployee.email}
-                  onChange={(e) => setSelectedEmployee(prev => prev ? { ...prev, email: e.target.value } : null)}
+                  onChange={(e) =>
+                    setSelectedEmployee((p) => (p ? { ...p, email: e.target.value } : p))
+                  }
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="edit-department">Osasto</Label>
-                <Select 
-                  value={selectedEmployee.department} 
-                  onValueChange={(value) => setSelectedEmployee(prev => prev ? { ...prev, department: value } : null)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {departments.map(dept => (
-                      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+
+<Select
+  value={
+    editCreatingNewDept
+      ? "NEW_DEPT"
+      : (selectedEmployee?.department || "")
+  }
+  onValueChange={(value) => {
+    if (!selectedEmployee) return;
+    if (value === "NEW_DEPT") {
+      setEditCreatingNewDept(true);
+      setEditCustomDepartment("");
+      setSelectedEmployee(p => p ? { ...p, department: "" } : p);
+    } else {
+      setEditCreatingNewDept(false);
+      setEditCustomDepartment("");
+      setSelectedEmployee(p => p ? { ...p, department: value } : p);
+    }
+  }}
+>
+  <SelectTrigger>
+    <SelectValue placeholder="Valitse osasto" />
+  </SelectTrigger>
+  <SelectContent>
+    {departments.map((dept) => (
+      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
+    ))}
+    <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
+  </SelectContent>
+</Select>
+
+{editCreatingNewDept && (
+  <Input
+    placeholder="Kirjoita uusi osasto…"
+    className="mt-2"
+    value={editCustomDepartment}
+    onChange={(e) => {
+      const v = e.target.value;
+      setEditCustomDepartment(v);
+      setSelectedEmployee(p => p ? { ...p, department: v } : p);
+    }}
+  />
+)}
+
+
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
                   id="edit-active"
                   checked={selectedEmployee.isActive}
-                  onCheckedChange={(checked) => setSelectedEmployee(prev => prev ? { ...prev, isActive: checked } : null)}
+                  onCheckedChange={(checked) =>
+                    setSelectedEmployee((p) => (p ? { ...p, isActive: checked } : p))
+                  }
                 />
                 <Label htmlFor="edit-active">Aktiivinen työntekijä</Label>
               </div>
@@ -380,20 +574,20 @@ const EmployeeList = () => {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {departments.map(department => {
-              const deptEmployees = employees.filter(emp => emp.department === department);
-              const activeDeptEmployees = deptEmployees.filter(emp => emp.isActive);
-              
-              return (
-                <div key={department} className="text-center p-3 border border-border rounded-lg">
-                  <h4 className="font-medium mb-2">{department}</h4>
-                  <div className="text-2xl font-bold text-primary">{activeDeptEmployees.length}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {deptEmployees.length} yhteensä
+            {useMemo(() => {
+              const depts = [...new Set(employees.map((e) => e.department))];
+              return depts.map((department) => {
+                const deptEmployees = employees.filter((e) => e.department === department);
+                const activeDeptEmployees = deptEmployees.filter((e) => e.isActive);
+                return (
+                  <div key={department} className="text-center p-3 border border-border rounded-lg">
+                    <h4 className="font-medium mb-2">{department}</h4>
+                    <div className="text-2xl font-bold text-primary">{activeDeptEmployees.length}</div>
+                    <div className="text-xs text-muted-foreground">{deptEmployees.length} yhteensä</div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              });
+            }, [employees])}
           </div>
         </CardContent>
       </Card>
