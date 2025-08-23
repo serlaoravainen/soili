@@ -8,6 +8,9 @@ import { Calendar, Clock, Users, AlertCircle, Lock, Plane, Plus } from "lucide-r
 import { ShiftType, Employee, DateInfo } from "../types";
 import { supabase } from "@/lib/supaBaseClient";
 import { toast } from "sonner";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 type ShiftRow = {
   employee_id: string;
@@ -48,6 +51,8 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ employee: string; day: number } | null>(null);
+  const [openPopover, setOpenPopover] = useState<string | null>(null);
+
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
   const dates: DateInfo[] = useMemo(() => {
@@ -160,21 +165,20 @@ function getShift(empId: string, dayIndex: number): ShiftType {
     }, 0);
 
   // Klikkaus: toggle empty <-> normal(8h), upsert DB:hen
-async function handleCellClick(employeeId: string, dayIndex: number) {
+// ScheduleTable.tsx
+
+async function handleCellClick(employeeId: string, dayIndex: number, hours: number | null) {
   setSelectedCell({ employee: employeeId, day: dayIndex });
 
   const iso = (dates[dayIndex] as any).iso as string;
   const key = `${employeeId}|${iso}`;
   const curr = shiftsMap[key];
 
-  // Onko solussa tällä hetkellä "aktiivinen normaali vuoro"?
-  const hasNormal = !!curr && curr.type === "normal" && (curr.hours ?? 0) > 0;
+  if (hours && hours > 0) {
+    // -> aseta uusi vuoro valituilla tunneilla
+    const next = { employee_id: employeeId, work_date: iso, type: "normal" as const, hours };
 
-  if (!hasNormal) {
-    // -> kytke päälle: normal 8h
-    const next = { employee_id: employeeId, work_date: iso, type: "normal" as const, hours: 8 };
-
-    // optimistic
+    // optimistic update
     setShiftsMap(m => ({ ...m, [key]: next }));
 
     const { error } = await supabase.from("shifts").upsert(next, { onConflict: "employee_id,work_date" });
@@ -188,10 +192,9 @@ async function handleCellClick(employeeId: string, dayIndex: number) {
       toast.error("Tallennus epäonnistui");
       return;
     }
-    toast.success("Tallennettu");
+    toast.success(`${hours}h tallennettu`);
   } else {
-    // -> kytke pois: POISTA rivi (ei "empty"-tyyppiä DB:ssä)
-    // optimistic
+    // -> poista rivi
     setShiftsMap(m => {
       const copy = { ...m };
       delete copy[key];
@@ -205,14 +208,14 @@ async function handleCellClick(employeeId: string, dayIndex: number) {
       .eq("work_date", iso);
 
     if (error) {
-      // revert
       setShiftsMap(m => ({ ...m, [key]: curr! }));
       toast.error("Poisto epäonnistui");
       return;
     }
-    toast.success("Poistettu");
+    toast.success("Vuoro poistettu");
   }
 }
+
 
 
   // UI-helper solun ulkoasuun
@@ -236,168 +239,226 @@ async function handleCellClick(employeeId: string, dayIndex: number) {
   }
 
   return (
-    <div className="w-full space-y-6">
-      <Card className="shadow-lg border-0 bg-gradient-to-r from-background to-secondary/20">
-        <CardHeader className="pb-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Calendar className="w-6 h-6 text-primary" />
-              <CardTitle className="text-2xl text-primary">Vuorot</CardTitle>
-            </div>
-            <Badge variant="secondary" className="px-3 py-1">
-              <Users className="w-4 h-4 mr-2" />
-              {activeEmployees.length} työntekijää
-            </Badge>
+  <div className="w-full space-y-6">
+    <Card className="shadow-lg border-0 bg-gradient-to-r from-background to-secondary/20">
+      <CardHeader className="pb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <Calendar className="w-6 h-6 text-primary" />
+            <CardTitle className="text-2xl text-primary">Vuorot</CardTitle>
           </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <div className="min-w-full">
-              {/* Header */}
-              <div className="bg-muted/50 border-b">
-                <div className="grid grid-cols-11 gap-px">
-                  <div className="p-4 bg-background">
-                    <span className="text-sm font-medium text-muted-foreground">Työntekijä</span>
-                  </div>
-                  {dates.map((date, index) => (
-                    <div key={index} className="p-3 bg-background text-center">
-                      <div className="text-xs font-medium text-muted-foreground">{date.day}</div>
-                      <div className="text-sm font-semibold mt-1">{date.date}</div>
-                    </div>
-                  ))}
+          <Badge variant="secondary" className="px-3 py-1">
+            <Users className="w-4 h-4 mr-2" />
+            {activeEmployees.length} työntekijää
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <div className="min-w-full">
+            {/* Header */}
+            <div className="bg-muted/50 border-b">
+              <div className="grid grid-cols-11 gap-px">
+                <div className="p-4 bg-background">
+                  <span className="text-sm font-medium text-muted-foreground">Työntekijä</span>
                 </div>
-              </div>
-
-              {/* Employee Rows */}
-              <div className="divide-y divide-border">
-                {activeEmployees.map((employee) => (
-                  <div key={employee.id} className="grid grid-cols-11 gap-px hover:bg-accent/30 transition-colors">
-                    <div className="p-4 bg-background flex items-center justify-between">
-                      <div>
-                        <span className="font-medium">{employee.name}</span>
-                        <div className="text-xs text-muted-foreground">{employee.department}</div>
-                      </div>
-                      <Badge variant="outline" className="text-xs">
-                        {getTotalHours(employee)}h
-                      </Badge>
-                    </div>
-
-                    {dates.map((_, dayIndex) => {
-                      const shift = getShift(employee.id, dayIndex);
-                      const shiftDisplay = getShiftDisplay(shift);
-                      const isSelected =
-                        selectedCell?.employee === employee.id && selectedCell?.day === dayIndex;
-
-                      return (
-                        <TooltipProvider key={dayIndex}>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <div
-                                className={`
-                                  h-16 p-2 m-0 rounded-none border-0 group cursor-pointer
-                                  flex items-center justify-center
-                                  ${shiftDisplay.color}
-                                  ${isSelected ? "ring-2 ring-ring ring-offset-2" : ""}
-                                  transition-all duration-200 hover:scale-105 hover:shadow-md
-                                `}
-                                onClick={() => handleCellClick(employee.id, dayIndex)}
-                              >
-                                <div className="flex flex-col items-center space-y-1">
-                                  {shiftDisplay.icon}
-                                  {shiftDisplay.content && (
-                                    <span className="text-xs font-medium">{shiftDisplay.content}</span>
-                                  )}
-                                </div>
-                              </div>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              <p>
-                                {employee.name} – {dates[dayIndex].day} {dates[dayIndex].date}
-                              </p>
-                              {shift.type === "normal" && <p>{shift.hours} tuntia</p>}
-                              {shift.type === "empty" && <p>Lisää vuoro</p>}
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      );
-                    })}
+                {dates.map((date, index) => (
+                  <div key={index} className="p-3 bg-background text-center">
+                    <div className="text-xs font-medium text-muted-foreground">{date.day}</div>
+                    <div className="text-sm font-semibold mt-1">{date.date}</div>
                   </div>
                 ))}
               </div>
+            </div>
 
-              {/* Summary Row */}
-              <div className="bg-accent/50 border-t-2 border-primary/20">
-                <div className="grid grid-cols-11 gap-px">
-                  <div className="p-4 bg-background">
-                    <div className="flex items-center space-x-2">
-                      <Users className="w-4 h-4 text-muted-foreground" />
-                      <span className="font-medium text-sm">
-                        Yhteensä ({activeEmployees.length} työntekijää)
-                      </span>
+            {/* Employee Rows */}
+            <div className="divide-y divide-border">
+              {activeEmployees.map((employee) => (
+                <div
+                  key={employee.id}
+                  className="grid grid-cols-11 gap-px hover:bg-accent/30 transition-colors"
+                >
+                  <div className="p-4 bg-background flex items-center justify-between">
+                    <div>
+                      <span className="font-medium">{employee.name}</span>
+                      <div className="text-xs text-muted-foreground">{employee.department}</div>
                     </div>
+                    <Badge variant="outline" className="text-xs">
+                      {getTotalHours(employee)}h
+                    </Badge>
                   </div>
-                  {dates.map((_, dayIndex) => {
-                    const dayTotal = activeEmployees.reduce((total, emp) => {
-                      const s = getShift(emp.id, dayIndex);
-                      return total + (s?.hours || 0);
-                    }, 0);
 
-                    const filledCount = activeEmployees.filter(
-                      (emp) => getShift(emp.id, dayIndex)?.type !== "empty"
-                    ).length;
+                  {dates.map((_, dayIndex) => {
+                    const shift = getShift(employee.id, dayIndex);
+                    const shiftDisplay = getShiftDisplay(shift);
+                    const isSelected =
+                      selectedCell?.employee === employee.id && selectedCell?.day === dayIndex;
 
                     return (
-                      <div key={dayIndex} className="p-3 bg-background text-center">
-                        <div className="text-sm font-semibold text-primary">{dayTotal}h</div>
-                        <div className="text-xs text-muted-foreground">{filledCount} henkilöä</div>
-                      </div>
+                      <Popover
+  key={dayIndex}
+  open={openPopover === `${employee.id}-${dayIndex}`}
+  onOpenChange={(o) =>
+    setOpenPopover(o ? `${employee.id}-${dayIndex}` : null)
+  }
+>
+  <PopoverTrigger asChild>
+    <div
+      className={`
+        h-16 p-2 m-0 rounded-none border-0 group cursor-pointer
+        flex items-center justify-center
+        ${shiftDisplay.color}
+        ${isSelected ? "ring-2 ring-ring ring-offset-2" : ""}
+        transition-all duration-200 hover:scale-105 hover:shadow-md
+      `}
+    >
+      <div className="flex flex-col items-center space-y-1">
+        {shiftDisplay.icon}
+        {shiftDisplay.content && (
+          <span className="text-xs font-medium">{shiftDisplay.content}</span>
+        )}
+      </div>
+    </div>
+  </PopoverTrigger>
+
+
+                        <PopoverContent className="w-64 p-3 space-y-3" side="bottom" align="center">
+                          <div className="text-sm font-medium text-center">
+                            {employee.name} – {dates[dayIndex].day} {dates[dayIndex].date}
+                          </div>
+
+                          {/* Pikavalinnat */}
+                          <div className="grid grid-cols-2 gap-2">
+                            {[4, 6, 7.5, 8].map((h) => (
+                            <Button
+  key={h}
+  variant="outline"
+  size="sm"
+  onClick={() => {
+    handleCellClick(employee.id, dayIndex, h);
+    setOpenPopover(null); // sulkee popoverin heti
+  }}
+  className="justify-center"
+>
+  {h}h
+</Button>
+                            ))}
+                          </div>
+
+                          {/* Muu-arvo */}
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              step="0.5"
+                              placeholder="esim. 5.5"
+                              className="h-8"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  const val = parseFloat(
+                                    (e.target as HTMLInputElement).value
+                                  );
+                                  if (!isNaN(val)) handleCellClick(employee.id, dayIndex, val);
+                                }
+                              }}
+                            />
+                            <Button
+                              size="sm"
+                              onClick={(e) => {
+                                const input = (e.currentTarget.parentElement?.querySelector(
+                                  "input"
+                                ) as HTMLInputElement) || null;
+                                const val = input ? parseFloat(input.value) : NaN;
+                                if (!isNaN(val)) handleCellClick(employee.id, dayIndex, val);
+                              }}
+                            >
+                              ✓
+                            </Button>
+                          </div>
+
+                          <div className="text-xs text-muted-foreground text-center">
+                            Vinkki: 0h poistaa vuoron.
+                          </div>
+                        </PopoverContent>
+                      </Popover>
                     );
                   })}
                 </div>
+              ))}
+            </div>
+
+            {/* Summary Row */}
+            <div className="bg-accent/50 border-t-2 border-primary/20">
+              <div className="grid grid-cols-11 gap-px">
+                <div className="p-4 bg-background">
+                  <div className="flex items-center space-x-2">
+                    <Users className="w-4 h-4 text-muted-foreground" />
+                    <span className="font-medium text-sm">
+                      Yhteensä ({activeEmployees.length} työntekijää)
+                    </span>
+                  </div>
+                </div>
+                {dates.map((_, dayIndex) => {
+                  const dayTotal = activeEmployees.reduce((total, emp) => {
+                    const s = getShift(emp.id, dayIndex);
+                    return total + (s?.hours || 0);
+                  }, 0);
+
+                  const filledCount = activeEmployees.filter(
+                    (emp) => getShift(emp.id, dayIndex)?.type !== "empty"
+                  ).length;
+
+                  return (
+                    <div key={dayIndex} className="p-3 bg-background text-center">
+                      <div className="text-sm font-semibold text-primary">{dayTotal}h</div>
+                      <div className="text-xs text-muted-foreground">{filledCount} henkilöä</div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </CardContent>
+    </Card>
 
-      {/* Legend */}
-      <Card className="shadow-md">
-        <CardContent className="p-4">
-          <div className="flex flex-wrap gap-4 items-center justify-center">
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-primary rounded-sm flex items-center justify-center">
-                <Clock className="w-2.5 h-2.5 text-primary-foreground" />
-              </div>
-              <span className="text-sm">Normaali vuoro</span>
+    {/* Legend */}
+    <Card className="shadow-md">
+      <CardContent className="p-4">
+        <div className="flex flex-wrap gap-4 items-center justify-center">
+          <div className="flex items-center space-x-2">
+            <div className="w-4 h-4 bg-primary rounded-sm flex items-center justify-center">
+              <Clock className="w-2.5 h-2.5 text-primary-foreground" />
             </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-amber-500 rounded-sm flex items-center justify-center">
-                <Lock className="w-2.5 h-2.5 text-white" />
-              </div>
-              <span className="text-sm">Lukittu vuoro</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-destructive rounded-sm flex items-center justify-center">
-                <AlertCircle className="w-2.5 h-2.5 text-destructive-foreground" />
-              </div>
-              <span className="text-sm">Poissaolo</span>
-            </div>
-            <div className="flex items-center space-x-2">
-              <div className="w-4 h-4 bg-blue-500 rounded-sm flex items-center justify-center">
-                <Plane className="w-2.5 h-2.5 text-white" />
-              </div>
-              <span className="text-sm">Loma</span>
-            </div>
+            <span className="text-sm">Normaali vuoro</span>
           </div>
-        </CardContent>
-      </Card>
+          <div className="flex items-center space-x-2">
+            <div className="w-4 h-4 bg-amber-500 rounded-sm flex items-center justify-center">
+              <Lock className="w-2.5 h-2.5 text-white" />
+            </div>
+            <span className="text-sm">Lukittu vuoro</span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="w-4 h-4 bg-destructive rounded-sm flex items-center justify-center">
+              <AlertCircle className="w-2.5 h-2.5 text-destructive-foreground" />
+            </div>
+            <span className="text-sm">Poissaolo</span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="w-4 h-4 bg-blue-500 rounded-sm flex items-center justify-center">
+              <Plane className="w-2.5 h-2.5 text-white" />
+            </div>
+            <span className="text-sm">Loma</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
 
-      {/* Footer Note */}
-      <div className="text-center text-xs text-muted-foreground bg-muted/30 p-3 rounded-lg">
-        Vinkki: klikkaa solua (toggle 0 ↔ 8h). Laajennetaan pian valikolla (0, 6, 7.5, 8), tuplaklikkaus manuaalinen syöttö, raahaus kopiointiin.
-      </div>
+    {/* Footer Note */}
+    <div className="text-center text-xs text-muted-foreground bg-muted/30 p-3 rounded-lg">
+      Vinkki: klikkaa solua → valitse tunnit. 0h poistaa vuoron.
     </div>
-  );
-};
+  </div>
+);
+}
 
 export default ScheduleTable;
