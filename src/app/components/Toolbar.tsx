@@ -75,6 +75,11 @@ type ShiftRow = {
 
 const Toolbar = () => {
 
+const undo = useScheduleStore((s) => s.undo);
+const redo = useScheduleStore((s) => s.redo);
+const canUndo = useScheduleStore((s) => s.undoStack.length > 0);
+const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
+
 const saveAll = useScheduleStore((s) => s.saveAll);
 const dirty = useScheduleStore((s) => s.dirty);
 
@@ -440,14 +445,14 @@ async function handleSave() {
 </Button>
 
 
-            <div className="flex items-center gap-1">
-              <Button variant="ghost" size="sm" disabled title="Ei käytössä MVP:ssä">
-                <Undo className="w-4 h-4" />
-              </Button>
-              <Button variant="ghost" size="sm" disabled title="Ei käytössä MVP:ssä">
-                <Redo className="w-4 h-4" />
-              </Button>
-            </div>
+<div className="flex items-center gap-1">
+  <Button variant="ghost" size="sm" onClick={undo} disabled={!canUndo}>
+    <Undo className="w-4 h-4" />
+  </Button>
+  <Button variant="ghost" size="sm" onClick={redo} disabled={!canRedo}>
+    <Redo className="w-4 h-4" />
+  </Button>
+</div>
           </div>
 
           {/* Center Section - View Options */}
@@ -535,11 +540,7 @@ async function handleSave() {
               Jakso: {RANGE[0]} – {RANGE[RANGE.length - 1]}
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-xs">
-              Automaattinen tallennus: Päällä
-            </Badge>
-          </div>
+          
         </div>
       </CardContent>
     </Card>

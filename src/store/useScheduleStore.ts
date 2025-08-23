@@ -67,35 +67,30 @@ export const useScheduleStore = create<State & Actions>((set, get) => ({
   },
 
 applyCellChange: ({ employee_id, work_date, hours, type }) => {
-  const { shiftsMap, pendingChanges } = get();
+  const { shiftsMap, pendingChanges, undoStack } = get();
   const k = `${employee_id}|${work_date}`;
   const nextMap = { ...shiftsMap };
 
+  let change: Pending;
+
   if (hours && hours > 0) {
-    const row: ShiftRow = {
-      employee_id,
-      work_date,
-      type: type ?? "normal",
-      hours,
-    };
+    const row: ShiftRow = { employee_id, work_date, type: type ?? "normal", hours };
     nextMap[k] = row;
-    set({
-      shiftsMap: nextMap,
-      pendingChanges: [...pendingChanges, { kind: "upsert", row }],
-      dirty: true,
-    });
+    change = { kind: "upsert", row };
   } else {
     delete nextMap[k];
-    set({
-      shiftsMap: nextMap,
-      pendingChanges: [
-        ...pendingChanges,
-        { kind: "delete", employee_id, work_date },
-      ],
-      dirty: true,
-    });
+    change = { kind: "delete", employee_id, work_date };
   }
+
+  set({
+    shiftsMap: nextMap,
+    pendingChanges: [...pendingChanges, change],
+    undoStack: [...undoStack, [change]],   // 🔑 lisätään viimeisin muutos batchina
+    redoStack: [],
+    dirty: true,
+  });
 },
+
 
 
 saveAll: async () => {
@@ -139,72 +134,53 @@ saveAll: async () => {
 },
 
 
-  undo: () => {
-    const { undoStack, shiftsMap, pendingChanges, redoStack } = get();
-    if (undoStack.length === 0) return;
+ undo: () => {
+  const { undoStack, shiftsMap, redoStack } = get();
+  if (undoStack.length === 0) return;
 
-    const lastBatch = undoStack[undoStack.length - 1];
+  const lastBatch = undoStack[undoStack.length - 1];
+  const newMap = { ...shiftsMap };
 
-    // Käännetään viimeisin muutos
-    const newMap = { ...shiftsMap };
-    const inverseBatch: Pending[] = [];
+  // Käännä viimeisin batch
+  lastBatch.forEach((c) => {
+    if (c.kind === "upsert") {
+      delete newMap[`${c.row.employee_id}|${c.row.work_date}`];
+    } else {
+      // Jos poistettiin, tähän voisi palauttaa rivin, mutta MVP:ssä skippaa
+    }
+  });
 
-    lastBatch.forEach((c) => {
-      if (c.kind === "upsert") {
-        const k = keyOf(c.row.employee_id, c.row.work_date);
-        const prev = pendingChanges.findLast?.(
-          (x) =>
-            x.kind === "delete" &&
-            x.employee_id === c.row.employee_id &&
-            x.work_date === c.row.work_date
-        );
-        // Inversio: jos upsert tehtiin, undo = delete
-        delete newMap[k];
-        inverseBatch.push({
-          kind: "delete",
-          employee_id: c.row.employee_id,
-          work_date: c.row.work_date,
-        });
-      } else {
-        // delete -> undo = palauta (tarvitaan arvo; ei aina saatavilla)
-        // Tässä yksinkertainen toteutus: ei palauteta arvoa, koska ei tiedetä tuntimäärää
-        // Reaaliappissa säilytä myös "prevRow" upotettuna Undo-dataan.
-        // Nyt vain no-op, ettei valehdella.
-      }
-    });
+  set({
+    shiftsMap: newMap,
+    undoStack: undoStack.slice(0, -1),
+    redoStack: [...redoStack, lastBatch],
+    dirty: true,
+  });
+},
 
-    set({
-      shiftsMap: newMap,
-      undoStack: undoStack.slice(0, -1),
-      redoStack: [...redoStack, lastBatch],
-      // pendingChanges EI muuteta – ne ovat tallentamattomia; käyttäjä voi tallentaa uudelleen tilan
-      dirty: true,
-    });
-  },
+redo: () => {
+  const { redoStack, shiftsMap, undoStack } = get();
+  if (redoStack.length === 0) return;
 
-  redo: () => {
-    const { redoStack, shiftsMap, undoStack } = get();
-    if (redoStack.length === 0) return;
-    const batch = redoStack[redoStack.length - 1];
+  const batch = redoStack[redoStack.length - 1];
+  const newMap = { ...shiftsMap };
 
-    const newMap = { ...shiftsMap };
-    batch.forEach((c) => {
-      if (c.kind === "upsert") {
-        const k = keyOf(c.row.employee_id, c.row.work_date);
-        newMap[k] = c.row;
-      } else {
-        const k = keyOf(c.employee_id, c.work_date);
-        delete newMap[k];
-      }
-    });
+  batch.forEach((c) => {
+    if (c.kind === "upsert") {
+      newMap[`${c.row.employee_id}|${c.row.work_date}`] = c.row;
+    } else {
+      delete newMap[`${c.employee_id}|${c.work_date}`];
+    }
+  });
 
-    set({
-      shiftsMap: newMap,
-      undoStack: [...undoStack, batch],
-      redoStack: redoStack.slice(0, -1),
-      dirty: true,
-    });
-  },
+  set({
+    shiftsMap: newMap,
+    undoStack: [...undoStack, batch],
+    redoStack: redoStack.slice(0, -1),
+    dirty: true,
+  });
+},
+
 
   autoGenerate: () => {
     const { employees, dates, shiftsMap, undoStack } = get();
@@ -242,7 +218,7 @@ saveAll: async () => {
     set({
       shiftsMap: nextMap,
       pendingChanges: [...get().pendingChanges, ...batch],
-      undoStack: [...undoStack, batch],
+      undoStack: [...get().undoStack, batch],
       redoStack: [],
       dirty: true,
     });
