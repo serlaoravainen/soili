@@ -16,6 +16,22 @@ import { useScheduleStore } from "@/store/useScheduleStore";
 
 type DateCell = DateInfo & { iso: string };
 
+        type EmployeeRow = {
+          id: string;
+          name: string;
+          email: string;
+          department: string;
+          is_active: boolean;
+        };
+
+        type AbsenceRow = {
+  employee_id: string;
+  start_date: string;
+  end_date: string | null;
+  reason: string | null;
+  status: "pending" | "approved" | "declined";
+};
+
 
 
 interface ScheduleTableProps {
@@ -81,14 +97,6 @@ const dates: DateCell[] = useMemo(() => {
 
         if (empErr) throw empErr;
 
-        type EmployeeRow = {
-          id: string;
-          name: string;
-          email: string;
-          department: string;
-          is_active: boolean;
-        };
-
 const mappedEmp: Employee[] = (empData ?? []).map((row: EmployeeRow) => ({
   id: row.id,
   name: row.name,
@@ -121,6 +129,28 @@ useScheduleStore.getState().hydrate({
     hours: r.hours ?? 0,
   })),
 });
+const { data: abs, error: absErr } = await supabase
+  .from("absences")
+  .select("employee_id, start_date, end_date, reason, status")
+  .eq("status", "approved")
+  .in("employee_id", mappedEmp.map((e) => e.id));
+
+if (absErr) throw absErr;
+
+const absMap: Record<string, { type: "absent" | "holiday"; reason: string }> = {};
+(abs ?? []).forEach((a: AbsenceRow) => {
+  const start = new Date(a.start_date);
+  const end = a.end_date ? new Date(a.end_date) : start;
+
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const iso = d.toISOString().slice(0, 10);
+    absMap[`${a.employee_id}|${iso}`] = {
+      type: a.reason?.toLowerCase() === "holiday" ? "holiday" : "absent",
+      reason: a.reason ?? "",
+    };
+  }
+});
+setAbsencesMap(absMap);
 
       } catch (e) {
         console.error(e);
@@ -133,6 +163,7 @@ useScheduleStore.getState().hydrate({
   }, [dates.length]);
   
 const employees = useScheduleStore(s => s.employees);
+const [absencesMap, setAbsencesMap] = useState<Record<string, { type: "absent" | "holiday"; reason: string }>>({});
 const shiftsMap = useScheduleStore(s => s.shiftsMap);
 const activeEmployees = employees;
 
@@ -243,14 +274,17 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
                     </Badge>
                   </div>
 
-                  {dates.map((_, dayIndex) => {
-                    const shift = getShift(employee.id, dayIndex);
-                    const shiftDisplay = getShiftDisplay(shift);
-                    const isSelected =
-                      selectedCell?.employee === employee.id && selectedCell?.day === dayIndex;
+{dates.map((_, dayIndex) => {
+  const shift = getShift(employee.id, dayIndex);
+  const shiftDisplay = getShiftDisplay(shift);
+  const isSelected =
+    selectedCell?.employee === employee.id && selectedCell?.day === dayIndex;
 
-                    return (
-                      <Popover
+  const key = `${employee.id}|${dates[dayIndex].iso}`;
+  const absence = absencesMap[key];
+
+  return (
+    <Popover
   key={dayIndex}
   open={openPopover === `${employee.id}-${dayIndex}`}
   onOpenChange={(o) =>
@@ -260,85 +294,130 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
   <PopoverTrigger asChild>
     <div
       className={`
-        h-16 p-2 m-0 rounded-none border-0 group cursor-pointer
+        h-16 p-2 m-0 rounded-none border-0 group
         flex items-center justify-center
-        ${shiftDisplay.color}
         ${isSelected ? "ring-2 ring-ring ring-offset-2" : ""}
         transition-all duration-200 hover:scale-105 hover:shadow-md
+        ${
+          absence
+            ? absence.type === "holiday"
+              ? "bg-blue-100 cursor-not-allowed"
+              : "bg-red-100 cursor-not-allowed"
+            : shiftDisplay.color + " cursor-pointer"
+        }
       `}
     >
       <div className="flex flex-col items-center space-y-1">
-        {shiftDisplay.icon}
-        {shiftDisplay.content && (
-          <span className="text-xs font-medium">{shiftDisplay.content}</span>
+        {absence ? (
+          <>
+            <span
+              className={`text-xs font-medium ${
+                absence.type === "holiday" ? "text-blue-600" : "text-red-600"
+              }`}
+            >
+              {absence.type === "holiday" ? "L" : "A"}
+            </span>
+            <span className="text-[10px]">
+              {absence.type === "holiday" ? "Loma" : "Poissaolo"}
+            </span>
+          </>
+        ) : (
+          <>
+            {shiftDisplay.icon}
+            {shiftDisplay.content && (
+              <span className="text-xs font-medium">
+                {shiftDisplay.content}
+              </span>
+            )}
+          </>
         )}
       </div>
     </div>
   </PopoverTrigger>
 
+  {/* Näytä PopoverContent vain jos ei ole absence */}
+{!absence && (
+  <PopoverContent className="w-64 p-3 space-y-3" side="bottom" align="center">
+    <div className="text-sm font-medium text-center">
+      {employee.name} – {dates[dayIndex].day} {dates[dayIndex].date}
+    </div>
 
-                        <PopoverContent className="w-64 p-3 space-y-3" side="bottom" align="center">
-                          <div className="text-sm font-medium text-center">
-                            {employee.name} – {dates[dayIndex].day} {dates[dayIndex].date}
-                          </div>
+    {/* Pikavalinnat */}
+    <div className="grid grid-cols-2 gap-2">
+      {[4, 6, 7.5, 8].map((h) => (
+        <Button
+          key={h}
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            handleCellClick(employee.id, dayIndex, h);
+            setOpenPopover(null);
+          }}
+          className="justify-center"
+        >
+          {h}h
+        </Button>
+      ))}
+    </div>
 
-                          {/* Pikavalinnat */}
-                          <div className="grid grid-cols-2 gap-2">
-                            {[4, 6, 7.5, 8].map((h) => (
-                            <Button
-  key={h}
-  variant="outline"
-  size="sm"
-  onClick={() => {
-    handleCellClick(employee.id, dayIndex, h);
-    setOpenPopover(null); // sulkee popoverin heti
-  }}
-  className="justify-center"
->
-  {h}h
-</Button>
-                            ))}
-                          </div>
+    {/* Muu-arvo + Tallenna */}
+    <div className="flex items-center gap-2">
+      <Input
+        type="number"
+        step="0.5"
+        placeholder="esim. 5.5"
+        className="h-8"
+        onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+          if (e.key === "Enter") {
+            const val = parseFloat(e.currentTarget.value);
+            if (!isNaN(val)) {
+              handleCellClick(employee.id, dayIndex, val);
+              setOpenPopover(null);
+            }
+          }
+        }}
+      />
+      <Button
+        size="sm"
+        onClick={(e) => {
+          const input = e.currentTarget.parentElement?.querySelector("input") as HTMLInputElement | null;
+          const val = input ? parseFloat(input.value) : NaN;
+          if (!isNaN(val)) {
+            handleCellClick(employee.id, dayIndex, val);
+            setOpenPopover(null);
+          }
+        }}
+      >
+        ✓
+      </Button>
+    </div>
 
-                          {/* Muu-arvo */}
-                          <div className="flex items-center gap-2">
-                            <Input
-                              type="number"
-                              step="0.5"
-                              placeholder="esim. 5.5"
-                              className="h-8"
-                             onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-  if (e.key === "Enter") {
-    const val = parseFloat(e.currentTarget.value);
-    if (!isNaN(val)) {
-      handleCellClick(employee.id, dayIndex, val);
-      setOpenPopover(null);
-    }
-  }
-}}
+    {/* Poista vuoro */}
+    <div className="flex justify-center">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          handleCellClick(employee.id, dayIndex, 0);
+          setOpenPopover(null);
+        }}
+        className="text-destructive"
+      >
+        Poista (0h)
+      </Button>
+    </div>
 
-                            />
-                            <Button
-                              size="sm"
-                              onClick={(e) => {
-                                const input = (e.currentTarget.parentElement?.querySelector(
-                                  "input"
-                                ) as HTMLInputElement) || null;
-                                const val = input ? parseFloat(input.value) : NaN;
-                                if (!isNaN(val)) handleCellClick(employee.id, dayIndex, val);
-                              }}
-                            >
-                              ✓
-                            </Button>
-                          </div>
+    <div className="text-xs text-muted-foreground text-center">
+      Vinkki: 0h poistaa vuoron.
+    </div>
+  </PopoverContent>
+)}
 
-                          <div className="text-xs text-muted-foreground text-center">
-                            Vinkki: 0h poistaa vuoron.
-                          </div>
-                        </PopoverContent>
-                      </Popover>
-                    );
-                  })}
+</Popover>
+
+  );
+})}
+
                 </div>
               ))}
             </div>

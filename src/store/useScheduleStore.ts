@@ -1,304 +1,273 @@
+// src/store/useScheduleStore.ts
 "use client";
+
 import { create } from "zustand";
+import { devtools } from "zustand/middleware";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
-import type { Employee, DateInfo, } from "@/app/types"; // ✅ käytä virallista tyyppiä
 
+// KÄYTÄ YHTÄ TOTUUTTA: ota tyypit yhdestä paikasta
+import type { Employee, DateInfo } from "@/app/types";
 
-type ShiftRow = {
+// Sama DateCell kuin muualla
+export type DateCell = DateInfo & { iso: string };
+
+// Yhden solun persistomuoto
+export type ShiftRow = {
   employee_id: string;
   work_date: string; // YYYY-MM-DD
   type: "normal" | "locked" | "absent" | "holiday";
-  hours: number | null;
+  hours: number | null; // null sallitaan, mutta tallennetaan 0:ksi kun kirjoitetaan DB:hen
 };
 
-type DateCell = DateInfo & { iso: string };
-
-type Pending =
-  | { kind: "upsert"; row: ShiftRow }
-  | { kind: "delete"; employee_id: string; work_date: string };
+// Sisäinen muutos, jota kerätään saveAll:lle
+type PendingChange = {
+  employee_id: string;
+  work_date: string;
+  hours: number; // 0 => poista, >0 => upsert "normal"
+};
 
 type State = {
-  employees: Employee[];                 // ✅ täysi Employee
+  // Hydratoitu perusdata
+  employees: Employee[];
   dates: DateCell[];
-  shiftsMap: Record<string, ShiftRow>;
-  pendingChanges: Pending[];
-  undoStack: Pending[][];
-  redoStack: Pending[][];
-  dirty: boolean;
-};
 
-type Actions = {
-  hydrate: (p: { employees: Employee[]; dates: DateCell[]; shifts: ShiftRow[] }) => void;
-  applyCellChange: (row: { employee_id: string; work_date: string; hours: number | null; type?: ShiftRow["type"] }) => void;
+  // Vuorot mapattuna
+  shiftsMap: Record<string, ShiftRow>;
+
+  // Muutokset jotka pitää tallentaa
+  pending: Record<string, PendingChange>;
+
+  // Undo/redo pino
+  undoStack: PendingChange[];
+  redoStack: PendingChange[];
+
+  // UI-signaalit
+  dirty: boolean;
+
+  // Toiminnot
+  hydrate: (payload: {
+    employees: Employee[];
+    dates: DateCell[];
+    shifts: ShiftRow[];
+  }) => void;
+
+  applyCellChange: (p: { employee_id: string; work_date: string; hours: number | null }) => void;
+
   saveAll: () => Promise<void>;
+
   undo: () => void;
   redo: () => void;
-  autoGenerate: () => void;
-  exportCSV: () => void;
-  exportPrintable: () => void;
 };
 
-function keyOf(eid: string, iso: string) {
-  return `${eid}|${iso}`;
+function keyOf(empId: string, iso: string) {
+  return `${empId}|${iso}`;
 }
 
-export const useScheduleStore = create<State & Actions>((set, get) => ({
-  employees: [],        // ✅
-  dates: [],
-  shiftsMap: {},
-  pendingChanges: [],
-  undoStack: [],
-  redoStack: [],
-  dirty: false,
-
-  hydrate: ({ employees, dates, shifts }) => {
-    const m: Record<string, ShiftRow> = {};
-    shifts.forEach(r => { m[keyOf(r.employee_id, r.work_date)] = r; });
-    set({
-      employees,         // ✅ talleta täysi Employee-lista
-      dates,
-      shiftsMap: m,
-      pendingChanges: [],
-      undoStack: [],
-      redoStack: [],
-      dirty: false,
-    });
-  },
-
-applyCellChange: ({ employee_id, work_date, hours, type }) => {
-  const { shiftsMap, pendingChanges, undoStack } = get();
-  const k = `${employee_id}|${work_date}`;
-  const nextMap = { ...shiftsMap };
-
-  let change: Pending;
-
-  if (hours && hours > 0) {
-    const row: ShiftRow = { employee_id, work_date, type: type ?? "normal", hours };
-    nextMap[k] = row;
-    change = { kind: "upsert", row };
-  } else {
-    delete nextMap[k];
-    change = { kind: "delete", employee_id, work_date };
-  }
-
-  set({
-    shiftsMap: nextMap,
-    pendingChanges: [...pendingChanges, change],
-    undoStack: [...undoStack, [change]],   // 🔑 lisätään viimeisin muutos batchina
+export const useScheduleStore = create<State>()(
+  devtools((set, get) => ({
+    employees: [],
+    dates: [],
+    shiftsMap: {},
+    pending: {},
+    undoStack: [],
     redoStack: [],
-    dirty: true,
-  });
-},
+    dirty: false,
 
-
-
-saveAll: async () => {
-  const { pendingChanges } = get();
-  if (pendingChanges.length === 0) {
-    toast.message("Ei tallennettavia muutoksia");
-    return;
-  }
-
-  const upserts: ShiftRow[] = [];
-  const deletes: { employee_id: string; work_date: string }[] = [];
-
-  pendingChanges.forEach((c) => {
-    if (c.kind === "upsert") upserts.push(c.row);
-    else deletes.push({ employee_id: c.employee_id, work_date: c.work_date });
-  });
-
-  try {
-    if (upserts.length) {
-      const { error } = await supabase.from("shifts").upsert(upserts, {
-        onConflict: "employee_id,work_date",
+    hydrate: ({ employees, dates, shifts }) => {
+      // Rakennetaan map shifteistä
+      const map: Record<string, ShiftRow> = {};
+      for (const s of shifts) {
+        map[keyOf(s.employee_id, s.work_date)] = {
+          ...s,
+          hours: s.hours ?? 0,
+          // Varmista että type on unionista (tai normal jos tuntematon)
+          type:
+            s.type === "normal" ||
+            s.type === "locked" ||
+            s.type === "absent" ||
+            s.type === "holiday"
+              ? s.type
+              : "normal",
+        };
+      }
+      set({
+        employees,
+        dates,
+        shiftsMap: map,
+        pending: {},
+        undoStack: [],
+        redoStack: [],
+        dirty: false,
       });
-      if (error) throw error;
-    }
+    },
 
-    for (const d of deletes) {
-      const { error } = await supabase
-        .from("shifts")
-        .delete()
-        .eq("employee_id", d.employee_id)
-        .eq("work_date", d.work_date);
-      if (error) throw error;
-    }
+    applyCellChange: ({ employee_id, work_date, hours }) => {
+      const h = typeof hours === "number" ? hours : 0;
+      const k = keyOf(employee_id, work_date);
+      const { shiftsMap, pending, undoStack } = get();
 
-    set({ pendingChanges: [], dirty: false });
-    toast.success("Muutokset tallennettu");
-  } catch (e) {
-    console.error(e);
-    toast.error("Tallennus epäonnistui");
-  }
-},
+      // Laske edellinen arvo (käytetään undo:ssa)
+      const prev = shiftsMap[k];
 
+      // Päivitä live-näkymään:
+      const nextMap = { ...shiftsMap };
+      if (h <= 0) {
+        // 0h => poista vuoro näkyvistä
+        delete nextMap[k];
+      } else {
+        // >0h => laita normal-h vuoro
+        nextMap[k] = {
+          employee_id,
+          work_date,
+          type: "normal",
+          hours: h,
+        };
+      }
 
- undo: () => {
-  const { undoStack, shiftsMap, redoStack } = get();
-  if (undoStack.length === 0) return;
+      // Päivitä pending: 0h => merkkaa poistoksi, muuten upsertiksi
+      const nextPending = { ...pending, [k]: { employee_id, work_date, hours: h } };
 
-  const lastBatch = undoStack[undoStack.length - 1];
-  const newMap = { ...shiftsMap };
+      set({
+        shiftsMap: nextMap,
+        pending: nextPending,
+        undoStack: [...undoStack, { employee_id, work_date, hours: prev?.hours ?? 0 }],
+        redoStack: [],
+        dirty: true,
+      });
+    },
 
-  // Käännä viimeisin batch
-  lastBatch.forEach((c) => {
-    if (c.kind === "upsert") {
-      delete newMap[`${c.row.employee_id}|${c.row.work_date}`];
-    } else {
-      // Jos poistettiin, tähän voisi palauttaa rivin, mutta MVP:ssä skippaa
-    }
-  });
+    saveAll: async () => {
+      const { pending } = get();
+      const changes = Object.values(pending);
+      if (!changes.length) {
+        toast.info("Ei tallennettavia muutoksia");
+        return;
+      }
 
-  set({
-    shiftsMap: newMap,
-    undoStack: undoStack.slice(0, -1),
-    redoStack: [...redoStack, lastBatch],
-    dirty: true,
-  });
-},
+      const upserts: ShiftRow[] = [];
+      const deletes: { employee_id: string; work_date: string }[] = [];
 
-redo: () => {
-  const { redoStack, shiftsMap, undoStack } = get();
-  if (redoStack.length === 0) return;
+      for (const c of changes) {
+        if (c.hours <= 0) {
+          deletes.push({ employee_id: c.employee_id, work_date: c.work_date });
+        } else {
+          upserts.push({
+            employee_id: c.employee_id,
+            work_date: c.work_date,
+            type: "normal",
+            hours: c.hours,
+          });
+        }
+      }
 
-  const batch = redoStack[redoStack.length - 1];
-  const newMap = { ...shiftsMap };
+      try {
+        // Tee transaktio peräkkäin: ensin upsert, sitten deletet
+        if (upserts.length) {
+          const { error } = await supabase
+            .from("shifts")
+            .upsert(upserts, { onConflict: "employee_id,work_date" });
+          if (error) throw error;
+        }
 
-  batch.forEach((c) => {
-    if (c.kind === "upsert") {
-      newMap[`${c.row.employee_id}|${c.row.work_date}`] = c.row;
-    } else {
-      delete newMap[`${c.employee_id}|${c.work_date}`];
-    }
-  });
-
-  set({
-    shiftsMap: newMap,
-    undoStack: [...undoStack, batch],
-    redoStack: redoStack.slice(0, -1),
-    dirty: true,
-  });
-},
-
-
-  autoGenerate: () => {
-    const { employees, dates, shiftsMap, } = get();
-    const nextMap = { ...shiftsMap };
-    const batch: Pending[] = [];
-
-    // Sääntö: Arkipäivät (ma–pe) tyhjät solut -> 8h
-    dates.forEach((d) => {
-      const wd = new Date(d.iso + "T00:00:00").getDay(); // 1=Mon ... 5=Fri
-      const isWeekday = wd >= 1 && wd <= 5;
-      if (!isWeekday) return;
-
-      employees
-        .filter((e) => e.isActive)
-        .forEach((e) => {
-          const k = keyOf(e.id, d.iso);
-          if (!nextMap[k]) {
-            const row: ShiftRow = {
-              employee_id: e.id,
-              work_date: d.iso,
-              type: "normal",
-              hours: 8,
-            };
-            nextMap[k] = row;
-            batch.push({ kind: "upsert", row });
+        if (deletes.length) {
+          // Supabasen "in" yhdistelmäehdolla: suorita chunkkeina
+          const chunkSize = 500;
+          for (let i = 0; i < deletes.length; i += chunkSize) {
+            const chunk = deletes.slice(i, i + chunkSize);
+            const { error } = await supabase
+              .from("shifts")
+              .delete()
+              .in(
+                "employee_id",
+                chunk.map((d) => d.employee_id)
+              )
+              .in(
+                "work_date",
+                chunk.map((d) => d.work_date)
+              );
+            if (error) throw error;
           }
-        });
-    });
+        }
 
-    if (batch.length === 0) {
-      toast.message("Ei tyhjiä arkipäiviä täytettäväksi");
-      return;
-    }
+        set({ pending: {}, dirty: false });
+        toast.success("Tallennettu");
+      } catch (e) {
+        console.error(e);
+        toast.error("Tallennus epäonnistui");
+        // ÄLÄ nollaa pendingiä epäonnistumisessa
+      }
+    },
 
-    set({
-      shiftsMap: nextMap,
-      pendingChanges: [...get().pendingChanges, ...batch],
-      undoStack: [...get().undoStack, batch],
-      redoStack: [],
-      dirty: true,
-    });
-    toast.success(`Autogeneroitu ${batch.length} vuoroa (8h)`);
-  },
+    undo: () => {
+      const { undoStack, shiftsMap, pending, redoStack } = get();
+      if (!undoStack.length) return;
+      const last = undoStack[undoStack.length - 1];
 
-  exportCSV: () => {
-    const { employees, dates, shiftsMap } = get();
-    const header = ["Employee", ...dates.map((d) => d.iso), "TotalHours"];
-    const rows = employees.map((e) => {
-      let total = 0;
-      const cols = dates.map((d) => {
-        const r = shiftsMap[keyOf(e.id, d.iso)];
-        const h = r?.hours ?? 0;
-        total += h || 0;
-        return h ? String(h) : "";
+      const k = keyOf(last.employee_id, last.work_date);
+      const current = shiftsMap[k]; // mitä on nyt UI:ssa
+
+      // Palauta entinen tuntimäärä
+      const nextMap = { ...shiftsMap };
+      if (!last.hours || last.hours <= 0) {
+        delete nextMap[k];
+      } else {
+        nextMap[k] = {
+          employee_id: last.employee_id,
+          work_date: last.work_date,
+          type: "normal",
+          hours: last.hours,
+        };
+      }
+
+      // Päivitä pending vastaamaan undo-tilaa
+      const nextPending = { ...pending, [k]: { employee_id: last.employee_id, work_date: last.work_date, hours: last.hours ?? 0 } };
+
+      // Siirrä nykyinen tila redo-pinon itemiksi
+      const redoItem: PendingChange = {
+        employee_id: last.employee_id,
+        work_date: last.work_date,
+        hours: current?.hours ?? 0,
+      };
+
+      set({
+        shiftsMap: nextMap,
+        pending: nextPending,
+        undoStack: undoStack.slice(0, -1),
+        redoStack: [...redoStack, redoItem],
+        dirty: true,
       });
-      return [e.name, ...cols, String(total)];
-    });
+    },
 
-    const csv = [header, ...rows].map((r) => r.map((x) => `"${x}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "schedule.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success("CSV luotu");
-  },
+    redo: () => {
+      const { redoStack, shiftsMap, pending, undoStack } = get();
+      if (!redoStack.length) return;
+      const next = redoStack[redoStack.length - 1];
 
-  exportPrintable: () => {
-    const { employees, dates, shiftsMap } = get();
-    const html = `
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Schedule</title>
-<style>
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { border:1px solid #ddd; padding:6px; font-size:12px; text-align:center; }
-  th { background:#f4f4f6; }
-  h1{ font-size:16px; }
-</style>
-</head>
-<body>
-  <h1>Vuorotaulukko</h1>
-  <table>
-    <thead>
-      <tr>
-        <th>Employee</th>
-        ${dates.map((d) => `<th>${d.iso}</th>`).join("")}
-        <th>Total</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${employees
-        .map((e) => {
-          let total = 0;
-          const cells = dates
-            .map((d) => {
-              const r = shiftsMap[keyOf(e.id, d.iso)];
-              const h = r?.hours ?? 0;
-              total += h || 0;
-              return `<td>${h ? h : ""}</td>`;
-            })
-            .join("");
-          return `<tr><td style="text-align:left">${e.name}</td>${cells}<td>${total}</td></tr>`;
-        })
-        .join("")}
-    </tbody>
-  </table>
-  <script>window.print()</script>
-</body>
-</html>`;
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
-    toast.success("Tulostettava näkymä avattu (Tallenna PDF:ksi)");
-  },
-}));
+      const k = keyOf(next.employee_id, next.work_date);
+      const prev = shiftsMap[k];
+
+      const nextMap = { ...shiftsMap };
+      if (!next.hours || next.hours <= 0) {
+        delete nextMap[k];
+      } else {
+        nextMap[k] = {
+          employee_id: next.employee_id,
+          work_date: next.work_date,
+          type: "normal",
+          hours: next.hours,
+        };
+      }
+
+      const nextPending = { ...pending, [k]: { ...next } };
+
+      set({
+        shiftsMap: nextMap,
+        pending: nextPending,
+        redoStack: redoStack.slice(0, -1),
+        undoStack: [...undoStack, { employee_id: next.employee_id, work_date: next.work_date, hours: prev?.hours ?? 0 }],
+        dirty: true,
+      });
+    },
+  }))
+);
