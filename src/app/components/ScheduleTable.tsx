@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { Calendar, Clock, Users, AlertCircle, Lock, Plane, Plus } from "lucide-react";
 import { ShiftType, Employee, DateInfo } from "../types";
 import { supabase } from "@/lib/supaBaseClient";
@@ -11,6 +10,10 @@ import { toast } from "sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+
+
+
+type DateCell = DateInfo & { iso: string };
 
 type ShiftRow = {
   employee_id: string;
@@ -55,13 +58,13 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
-  const dates: DateInfo[] = useMemo(() => {
-    return Array.from({ length: DAYS }).map((_, i) => {
-      const iso = addDaysISO(START_ISO, i);
-      const d = new Date(iso + "T00:00:00");
-      return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso } as DateInfo & { iso: string };
-    });
-  }, []);
+const dates: DateCell[] = useMemo(() => {
+  return Array.from({ length: DAYS }).map((_, i): DateCell => {
+    const iso = addDaysISO(START_ISO, i);
+    const d = new Date(iso + "T00:00:00");
+    return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
+  });
+}, []);
 
   // Vuorot mapattuna: key = `${employee_id}|${work_date}`
   const [shiftsMap, setShiftsMap] = useState<Record<string, ShiftRow>>({});
@@ -104,8 +107,8 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
         // Shifts
         if (mappedEmp.length) {
-          const start = (dates[0] as any).iso as string;
-          const end = (dates[dates.length - 1] as any).iso as string;
+          const start = dates[0].iso;
+          const end = dates[dates.length - 1].iso;
 
           const { data: s, error: sErr } = await supabase
             .from("shifts")
@@ -147,7 +150,7 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
   // Lue solun vuoro mapista
 function getShift(empId: string, dayIndex: number): ShiftType {
-  const iso = (dates[dayIndex] as any).iso as string;
+  const iso = dates[dayIndex].iso;
   const key = `${empId}|${iso}`;
   const row = shiftsMap[key];
   if (!row) return { type: "empty" };                 // UI-fallback
@@ -170,7 +173,7 @@ function getShift(empId: string, dayIndex: number): ShiftType {
 async function handleCellClick(employeeId: string, dayIndex: number, hours: number | null) {
   setSelectedCell({ employee: employeeId, day: dayIndex });
 
-  const iso = (dates[dayIndex] as any).iso as string;
+  const iso = dates[dayIndex].iso;
   const key = `${employeeId}|${iso}`;
   const curr = shiftsMap[key];
 
@@ -352,14 +355,16 @@ async function handleCellClick(employeeId: string, dayIndex: number, hours: numb
                               step="0.5"
                               placeholder="esim. 5.5"
                               className="h-8"
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                  const val = parseFloat(
-                                    (e.target as HTMLInputElement).value
-                                  );
-                                  if (!isNaN(val)) handleCellClick(employee.id, dayIndex, val);
-                                }
-                              }}
+                             onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+  if (e.key === "Enter") {
+    const val = parseFloat(e.currentTarget.value);
+    if (!isNaN(val)) {
+      handleCellClick(employee.id, dayIndex, val);
+      setOpenPopover(null);
+    }
+  }
+}}
+
                             />
                             <Button
                               size="sm"
