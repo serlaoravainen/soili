@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Button } from './ui/button';
-import { Card, CardContent } from './ui/card';
-import { Badge } from './ui/badge';
-import { Separator } from './ui/separator';
-import { 
-  Upload, 
-  RefreshCw, 
-  Settings, 
-  Calendar,
+import { useScheduleStore } from "@/store/useScheduleStore";
+import React, { useMemo, useRef, useState } from "react";
+import { Button } from "./ui/button";
+import { Card, CardContent } from "./ui/card";
+import { Badge } from "./ui/badge";
+import { Separator } from "./ui/separator";
+import {
+  Upload,
+  RefreshCw,
+  Settings,
+  Calendar as CalIcon,
   FileSpreadsheet,
   FileText,
   Wand2,
@@ -18,41 +19,389 @@ import {
   Redo,
   Filter,
   Search,
-  Bell
-} from 'lucide-react';
-import { toast } from 'sonner';
+  Bell,
+} from "lucide-react";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supaBaseClient";
+
+
+
+// 🔧 PIDÄ synkassa ScheduleTablen kanssa (DRY: siirrä myöhemmin shared configiin)
+const START_ISO = "2025-08-18";
+const DAYS = 10;
+
+// pvm apurit
+function addDaysISO(iso: string, add: number) {
+  const d = new Date(iso);
+  d.setDate(d.getDate() + add);
+  return d.toISOString().slice(0, 10);
+}
+const RANGE = Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i));
+
+function formatTime(d = new Date()) {
+  return d.toLocaleTimeString("fi-FI", { hour: "2-digit", minute: "2-digit" });
+}
+
+// ISO week (viikkonumero)
+function getISOWeek(dateIso: string) {
+  const d = new Date(dateIso + "T00:00:00");
+  // ISO week algorithm
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+  const week =
+    1 +
+    Math.round(
+      ((d.getTime() - firstThursday.getTime()) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) /
+        7
+    );
+  return week;
+}
+
+type EmpRow = {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  is_active: boolean;
+};
+
+type ShiftRow = {
+  employee_id: string;
+  work_date: string;
+  type: "normal" | "locked" | "absent" | "holiday";
+  hours: number | null;
+};
 
 const Toolbar = () => {
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(true);
 
+const saveAll = useScheduleStore((s) => s.saveAll);
+const dirty = useScheduleStore((s) => s.dirty);
+
+async function handleSave() {
+  await saveAll();
+}
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false); // ScheduleTable tallentaa heti
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const [empCount, setEmpCount] = useState<number | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ————— data hakuja joita export/healthcheck/auto-gen käyttää —————
+  async function fetchActiveEmployees(): Promise<EmpRow[]> {
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, name, email, department, is_active")
+      .eq("is_active", true)
+      .order("created_at", { ascending: true });
+
+    if (error) throw error;
+    const rows = (data ?? []) as any as EmpRow[];
+    setEmpCount(rows.length);
+    return rows;
+  }
+
+  async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
+    const start = RANGE[0];
+    const end = RANGE[RANGE.length - 1];
+    let q = supabase
+      .from("shifts")
+      .select("employee_id, work_date, type, hours")
+      .gte("work_date", start)
+      .lte("work_date", end);
+
+    if (empIds && empIds.length) q = q.in("employee_id", empIds);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data ?? []) as any as ShiftRow[];
+  }
+
+  async function fetchAbsencesByRange(empIds: string[]) {
+    const start = RANGE[0];
+    const end = RANGE[RANGE.length - 1];
+    const { data, error } = await supabase
+      .from("absences")
+      .select("employee_id, start_date, end_date, status")
+      .in("employee_id", empIds)
+      .neq("status", "declined"); // vain pending/approved blokkaa
+    if (error) throw error;
+
+    // Tee date-haku kevyesti klientissä (välttää monimutkaisen SQL:n)
+    return (data ?? []).filter((r: any) => {
+      const s = r.start_date as string;
+      const e = (r.end_date as string) || s;
+      const min = Math.min(...RANGE.map((d) => d.localeCompare(s)));
+      const max = Math.max(...RANGE.map((d) => d.localeCompare(e)));
+      // jos jokin päivä RANGE:ssa osuu [s,e]:een, pidetään blokkaavana
+      return !(RANGE.every((day) => day < s || day > e));
+    });
+  }
+
+  // ————— ACTIONS —————
+
+  // 1) Auto-generointi — täyttää puuttuvat vuorot 8h normaaliksi, jos ei poissaoloa
   const handleAutoGenerate = async () => {
     setIsGenerating(true);
-    toast.info('Aloitetaan automaattinen vuorojen generointi...');
-    
-    // Simulate generation process
-    setTimeout(() => {
+    try {
+      toast.info("Aloitetaan automaattinen vuorojen generointi…");
+
+      const employees = await fetchActiveEmployees();
+      if (!employees.length) {
+        toast.info("Ei aktiivisia työntekijöitä.");
+        return;
+      }
+      const empIds = employees.map((e) => e.id);
+      const [existing, absences] = await Promise.all([
+        fetchShiftsByRange(empIds),
+        fetchAbsencesByRange(empIds),
+      ]);
+
+      // Map helpot tarkistukset
+      const existingSet = new Set(existing.map((s) => `${s.employee_id}|${s.work_date}`));
+      const absenceMap = new Map<string, { s: string; e: string }[]>();
+      absences.forEach((a: any) => {
+        const arr = absenceMap.get(a.employee_id) ?? [];
+        arr.push({ s: a.start_date, e: a.end_date ?? a.start_date });
+        absenceMap.set(a.employee_id, arr);
+      });
+
+      const batch: ShiftRow[] = [];
+      for (const emp of employees) {
+        for (const d of RANGE) {
+          const key = `${emp.id}|${d}`;
+          if (existingSet.has(key)) continue; // älä koske olemassaolevaan
+
+          // jos poissaolo kattaa päivän, skippaa
+          const ranges = absenceMap.get(emp.id) ?? [];
+          const blocked = ranges.some((r) => d >= r.s && d <= r.e);
+          if (blocked) continue;
+
+          batch.push({
+            employee_id: emp.id,
+            work_date: d,
+            type: "normal",
+            hours: 8,
+          });
+        }
+      }
+
+      if (!batch.length) {
+        toast.info("Ei täytettäviä tyhjiä soluja tälle jaksolle.");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("shifts")
+        .upsert(batch, { onConflict: "employee_id,work_date" });
+
+      if (error) throw error;
+
+      setLastSavedAt(formatTime());
+      toast.success(`Generoitu ${batch.length} vuoroa.`);
+    } catch (e: any) {
+      console.error(e);
+      toast.error("Generointi epäonnistui");
+    } finally {
       setIsGenerating(false);
-      toast.success('Vuorot generoitu onnistuneesti!');
-    }, 3000);
+    }
   };
 
-  const handleExportExcel = () => {
-    toast.success('Vie Excel-tiedostoon - lataus käynnistyy...');
+
+  // 3) Export CSV (Excel avaa suoraan)
+  const handleExportExcel = async () => {
+    try {
+      const employees = await fetchActiveEmployees();
+      const shifts = await fetchShiftsByRange(employees.map((e) => e.id));
+      const byId = new Map(employees.map((e) => [e.id, e]));
+      const header = [
+        "employee_name",
+        "employee_email",
+        "department",
+        "work_date",
+        "type",
+        "hours",
+      ];
+
+      const rows = shifts
+        .sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
+        .map((s) => {
+          const emp = byId.get(s.employee_id)!;
+          return [
+            emp?.name ?? "",
+            emp?.email ?? "",
+            emp?.department ?? "",
+            s.work_date,
+            s.type,
+            s.hours ?? 0,
+          ];
+        });
+
+      // lisää myös puuttuvat (tyhjät) rivit jos haluat: MVP ei lisää
+
+      const csv = [header, ...rows]
+        .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
+
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `vuorot_${RANGE[0]}_${RANGE[RANGE.length - 1]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("CSV ladattu");
+    } catch (e) {
+      console.error(e);
+      toast.error("CSV-vienti epäonnistui");
+    }
   };
 
-  const handleExportPDF = () => {
-    toast.success('Vie PDF-tiedostoon - lataus käynnistyy...');
+  // 4) Export PDF (MVP: tulostusystävällinen näkymä -> print)
+  const handleExportPDF = async () => {
+    try {
+      const employees = await fetchActiveEmployees();
+      const shifts = await fetchShiftsByRange(employees.map((e) => e.id));
+      const byId = new Map(employees.map((e) => [e.id, e]));
+
+      const win = window.open("", "_blank", "width=1024,height=768");
+      if (!win) {
+        toast.error("Ponnahdusikkuna estetty");
+        return;
+      }
+      const style = `
+        <style>
+          body { font-family: ui-sans-serif, system-ui, -apple-system; padding: 24px; }
+          h1,h2 { margin: 0 0 8px; }
+          table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+          th { background: #f3f4f6; }
+          .muted { color: #6b7280; font-size: 12px; margin-bottom: 12px; }
+        </style>`;
+      const header = `<h1>Vuorolistat</h1>
+        <div class="muted">${RANGE[0]} – ${RANGE[RANGE.length - 1]} • ${employees.length} työntekijää</div>`;
+
+      const rowsHtml = shifts
+        .sort((a, b) =>
+          a.employee_id === b.employee_id
+            ? a.work_date.localeCompare(b.work_date)
+            : a.employee_id.localeCompare(b.employee_id)
+        )
+        .map((s) => {
+          const e = byId.get(s.employee_id)!;
+          return `<tr>
+            <td>${e?.name ?? ""}</td>
+            <td>${e?.email ?? ""}</td>
+            <td>${e?.department ?? ""}</td>
+            <td>${s.work_date}</td>
+            <td>${s.type}</td>
+            <td>${s.hours ?? 0}</td>
+          </tr>`;
+        })
+        .join("");
+
+      win.document.write(`
+        <!doctype html><html><head><meta charset="utf-8" />
+        <title>Vuorot</title>${style}</head><body>
+          ${header}
+          <table>
+            <thead><tr>
+              <th>Nimi</th><th>Sähköposti</th><th>Osasto</th>
+              <th>Pvm</th><th>Tyyppi</th><th>Tunnit</th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+          <script>window.print();</script>
+        </body></html>
+      `);
+      win.document.close();
+    } catch (e) {
+      console.error(e);
+      toast.error("PDF-vienti epäonnistui");
+    }
   };
 
-  const handleSave = () => {
-    toast.success('Muutokset tallennettu onnistuneesti');
-    setHasUnsavedChanges(false);
+  // 5) Import CSV (email,work_date,hours)
+  const handleImport = () => fileInputRef.current?.click();
+
+  const onImportFile = async (file: File) => {
+    try {
+      const text = await file.text();
+      // Odotettu header: email,work_date,hours
+      const lines = text
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (!lines.length) {
+        toast.error("Tyhjä tiedosto");
+        return;
+      }
+
+      const header = lines[0].split(",").map((s) => s.trim().toLowerCase());
+      const emailIdx = header.indexOf("email");
+      const dateIdx = header.indexOf("work_date");
+      const hoursIdx = header.indexOf("hours");
+      if (emailIdx === -1 || dateIdx === -1 || hoursIdx === -1) {
+        toast.error('Odotettu header: "email,work_date,hours"');
+        return;
+      }
+
+      const employees = await fetchActiveEmployees();
+      const byEmail = new Map(employees.map((e) => [e.email.toLowerCase(), e]));
+
+      const bad: string[] = [];
+      const batch: ShiftRow[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(",").map((s) => s.trim().replace(/^"|"$/g, ""));
+        if (cols.length < 3) continue;
+        const email = cols[emailIdx].toLowerCase();
+        const d = cols[dateIdx];
+        const h = parseFloat(cols[hoursIdx]);
+        if (!email || !d || isNaN(h)) continue;
+        const emp = byEmail.get(email);
+        if (!emp) {
+          bad.push(lines[i]);
+          continue;
+        }
+        batch.push({
+          employee_id: emp.id,
+          work_date: d,
+          type: h > 0 ? "normal" : "normal",
+          hours: h > 0 ? h : 0,
+        });
+      }
+
+      if (!batch.length) {
+        toast.error("Ei kelvollisia rivejä importissa");
+        return;
+      }
+
+      const { error } = await supabase
+        .from("shifts")
+        .upsert(batch, { onConflict: "employee_id,work_date" });
+      if (error) throw error;
+
+      setLastSavedAt(formatTime());
+      if (bad.length) {
+        toast.warning(
+          `Import OK (${batch.length} riviä). ${bad.length} riviä jäi väliin tuntemattoman emailin takia.`
+        );
+      } else {
+        toast.success(`Import OK (${batch.length} riviä).`);
+      }
+    } catch (e) {
+      console.error(e);
+      toast.error("Import epäonnistui");
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
-  const handleImport = () => {
-    toast.info('Avaa tiedoston valitsin...');
-  };
+  // ————— UI —————
+  const weekNo = useMemo(() => getISOWeek(START_ISO), []);
+  const year = useMemo(() => new Date(START_ISO + "T00:00:00").getFullYear(), []);
 
   return (
     <Card className="shadow-md border-0 bg-gradient-to-r from-background to-secondary/10">
@@ -60,7 +409,7 @@ const Toolbar = () => {
         <div className="flex flex-wrap items-center gap-3 justify-between">
           {/* Left Section - Main Actions */}
           <div className="flex items-center gap-2">
-            <Button 
+            <Button
               onClick={handleAutoGenerate}
               disabled={isGenerating}
               className="bg-primary hover:bg-primary/90"
@@ -70,30 +419,32 @@ const Toolbar = () => {
               ) : (
                 <Wand2 className="w-4 h-4 mr-2" />
               )}
-              {isGenerating ? 'Generoidaan...' : 'Auto-generointi'}
+              {isGenerating ? "Generoidaan..." : "Auto-generointi"}
             </Button>
 
             <Separator orientation="vertical" className="h-8" />
 
-            <Button
-              variant="outline"
-              onClick={handleSave}
-              className={hasUnsavedChanges ? 'border-amber-500 text-amber-600' : ''}
-            >
-              <Save className="w-4 h-4 mr-2" />
-              Tallenna
-              {hasUnsavedChanges && (
-                <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
-                  •
-                </Badge>
-              )}
-            </Button>
+<Button
+  variant="outline"
+  onClick={handleSave}
+  disabled={!dirty}
+  className={dirty ? "border-amber-500 text-amber-600" : ""}
+>
+  <Save className="w-4 h-4 mr-2" />
+  Tallenna
+  {dirty && (
+    <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
+      •
+    </Badge>
+  )}
+</Button>
+
 
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" disabled title="Ei käytössä MVP:ssä">
                 <Undo className="w-4 h-4" />
               </Button>
-              <Button variant="ghost" size="sm">
+              <Button variant="ghost" size="sm" disabled title="Ei käytössä MVP:ssä">
                 <Redo className="w-4 h-4" />
               </Button>
             </div>
@@ -101,41 +452,55 @@ const Toolbar = () => {
 
           {/* Center Section - View Options */}
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => toast.info("Haku avautuu myöhemmin globaalina filttering-näkymänä")}
+            >
               <Search className="w-4 h-4 mr-2" />
               Haku
             </Button>
-            <Button variant="ghost" size="sm">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => toast.info("Suodatus tulee pian (osasto, tuntialue, tila)")}
+            >
               <Filter className="w-4 h-4 mr-2" />
               Suodatin
             </Button>
-            <Button variant="ghost" size="sm">
-              <Calendar className="w-4 h-4 mr-2" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => toast.info("Kalenteri vaihtaa ajanjaksoa (viikko/päivä). Tulossa.")}
+            >
+              <CalIcon className="w-4 h-4 mr-2" />
               Kalenteri
             </Button>
           </div>
 
           {/* Right Section - Export/Import */}
           <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) onImportFile(f);
+              }}
+            />
             <Button variant="outline" onClick={handleImport}>
               <Upload className="w-4 h-4 mr-2" />
               Tuo
             </Button>
 
             <div className="flex items-center gap-1">
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={handleExportExcel}
-              >
+              <Button variant="outline" size="sm" onClick={handleExportExcel}>
                 <FileSpreadsheet className="w-4 h-4 mr-2" />
                 Excel
               </Button>
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={handleExportPDF}
-              >
+              <Button variant="outline" size="sm" onClick={handleExportPDF}>
                 <FileText className="w-4 h-4 mr-2" />
                 PDF
               </Button>
@@ -143,11 +508,11 @@ const Toolbar = () => {
 
             <Separator orientation="vertical" className="h-8" />
 
-            <Button variant="ghost" size="sm">
+            <Button variant="ghost" size="sm" onClick={() => toast.info("Ilmoitukset tulevat pian.")}>
               <Bell className="w-4 h-4" />
             </Button>
 
-            <Button variant="ghost" size="sm">
+            <Button variant="ghost" size="sm" onClick={() => toast.info("Asetukset tulevat pian.")}>
               <Settings className="w-4 h-4" />
             </Button>
           </div>
@@ -155,12 +520,20 @@ const Toolbar = () => {
 
         {/* Status Bar */}
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
-          <div className="flex items-center gap-4 text-sm text-muted-foreground">
-            <span>Viimeksi tallennettu: 15:32</span>
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span>
+              Viimeksi tallennettu: {lastSavedAt ? lastSavedAt : "—"}
+            </span>
             <span>•</span>
-            <span>5 työntekijää</span>
+            <span>{empCount ?? "…"} työntekijää</span>
             <span>•</span>
-            <span>Viikko 34/2024</span>
+            <span>
+              Viikko {weekNo}/{year}
+            </span>
+            <span>•</span>
+            <span>
+              Jakso: {RANGE[0]} – {RANGE[RANGE.length - 1]}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-xs">

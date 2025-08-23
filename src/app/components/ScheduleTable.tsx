@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { useScheduleStore } from "@/store/useScheduleStore";
 
 
 
@@ -51,10 +52,12 @@ function fiDayMonth(d: Date) {
 }
 
 const ScheduleTable: React.FC<ScheduleTableProps> = () => {
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  
   const [loading, setLoading] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ employee: string; day: number } | null>(null);
   const [openPopover, setOpenPopover] = useState<string | null>(null);
+
+
 
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
@@ -67,7 +70,7 @@ const dates: DateCell[] = useMemo(() => {
 }, []);
 
   // Vuorot mapattuna: key = `${employee_id}|${work_date}`
-  const [shiftsMap, setShiftsMap] = useState<Record<string, ShiftRow>>({});
+  
 
   // 1) Hae työntekijät + 2) hae vuorot valitulle jaksolle
   useEffect(() => {
@@ -91,51 +94,39 @@ const dates: DateCell[] = useMemo(() => {
           is_active: boolean;
         };
 
-        const mappedEmp: Employee[] = (empData ?? [])
-          .map((row: EmployeeRow) => ({
-            id: row.id,
-            name: row.name,
-            email: row.email,
-            department: row.department,
-            isActive: !!row.is_active,
-            // shifts-array ei ole enää lähde; pidetään placeholder pituuden vuoksi UI:lle
-            shifts: Array.from({ length: dates.length }, () => ({ type: "empty" as ShiftType["type"] })),
-          }))
-          .filter((e) => e.isActive);
+const mappedEmp: Employee[] = (empData ?? []).map((row: EmployeeRow) => ({
+  id: row.id,
+  name: row.name,
+  email: row.email,               // ✅ lisää email
+  department: row.department,
+  isActive: !!row.is_active,
+  shifts: [] as ShiftType[],      // ✅ lisää shifts placeholder
+})).filter((e) => e.isActive);
 
-        setEmployees(mappedEmp);
 
-        // Shifts
-        if (mappedEmp.length) {
-          const start = dates[0].iso;
-          const end = dates[dates.length - 1].iso;
+        const { data: s, error: sErr } = await supabase
+  .from("shifts")
+  .select("employee_id, work_date, type, hours")
+  .gte("work_date", dates[0].iso)
+  .lte("work_date", dates[dates.length - 1].iso)
+  .in(
+    "employee_id",
+    mappedEmp.map((e) => e.id)
+  );
 
-          const { data: s, error: sErr } = await supabase
-            .from("shifts")
-            .select("employee_id, work_date, type, hours")
-            .gte("work_date", start)
-            .lte("work_date", end)
-            .in(
-              "employee_id",
-              mappedEmp.map((e) => e.id)
-            );
+if (sErr) throw sErr;
 
-          if (sErr) throw sErr;
+useScheduleStore.getState().hydrate({
+  employees: mappedEmp,
+  dates,
+  shifts: (s ?? []).map(r => ({
+    employee_id: r.employee_id,
+    work_date: r.work_date,
+    type: r.type as "normal" | "locked" | "absent" | "holiday",
+    hours: r.hours ?? 0,
+  })),
+});
 
-          const m: Record<string, ShiftRow> = {};
-          (s ?? []).forEach((r) => {
-            const key = `${r.employee_id}|${r.work_date}`;
-            m[key] = {
-              employee_id: r.employee_id,
-              work_date: r.work_date,
-              type: r.type as ShiftRow["type"],
-              hours: r.hours ?? 0,
-            };
-          });
-          setShiftsMap(m);
-        } else {
-          setShiftsMap({});
-        }
       } catch (e) {
         console.error(e);
         toast.error("Tietojen haku epäonnistui");
@@ -145,8 +136,10 @@ const dates: DateCell[] = useMemo(() => {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dates.length]);
-
-  const activeEmployees = employees; // jo suodatettu yllä
+  
+const employees = useScheduleStore(s => s.employees);
+const shiftsMap = useScheduleStore(s => s.shiftsMap);
+const activeEmployees = employees;
 
   // Lue solun vuoro mapista
 function getShift(empId: string, dayIndex: number): ShiftType {
@@ -170,54 +163,18 @@ function getShift(empId: string, dayIndex: number): ShiftType {
   // Klikkaus: toggle empty <-> normal(8h), upsert DB:hen
 // ScheduleTable.tsx
 
-async function handleCellClick(employeeId: string, dayIndex: number, hours: number | null) {
-  setSelectedCell({ employee: employeeId, day: dayIndex });
+const applyCellChange = useScheduleStore(s => s.applyCellChange);
 
+function handleCellClick(employeeId: string, dayIndex: number, hours: number | null) {
   const iso = dates[dayIndex].iso;
-  const key = `${employeeId}|${iso}`;
-  const curr = shiftsMap[key];
-
-  if (hours && hours > 0) {
-    // -> aseta uusi vuoro valituilla tunneilla
-    const next = { employee_id: employeeId, work_date: iso, type: "normal" as const, hours };
-
-    // optimistic update
-    setShiftsMap(m => ({ ...m, [key]: next }));
-
-    const { error } = await supabase.from("shifts").upsert(next, { onConflict: "employee_id,work_date" });
-    if (error) {
-      // revert
-      setShiftsMap(m => {
-        const copy = { ...m };
-        if (curr) copy[key] = curr; else delete copy[key];
-        return copy;
-      });
-      toast.error("Tallennus epäonnistui");
-      return;
-    }
-    toast.success(`${hours}h tallennettu`);
-  } else {
-    // -> poista rivi
-    setShiftsMap(m => {
-      const copy = { ...m };
-      delete copy[key];
-      return copy;
-    });
-
-    const { error } = await supabase
-      .from("shifts")
-      .delete()
-      .eq("employee_id", employeeId)
-      .eq("work_date", iso);
-
-    if (error) {
-      setShiftsMap(m => ({ ...m, [key]: curr! }));
-      toast.error("Poisto epäonnistui");
-      return;
-    }
-    toast.success("Vuoro poistettu");
-  }
+  applyCellChange({
+    employee_id: employeeId,
+    work_date: iso,
+    hours
+  });
+  setSelectedCell({ employee: employeeId, day: dayIndex });
 }
+
 
 
 
