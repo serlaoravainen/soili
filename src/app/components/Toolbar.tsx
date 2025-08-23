@@ -88,7 +88,6 @@ async function handleSave() {
 }
 
   const [isGenerating, setIsGenerating] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false); // ScheduleTable tallentaa heti
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [empCount, setEmpCount] = useState<number | null>(null);
 
@@ -103,7 +102,7 @@ async function handleSave() {
       .order("created_at", { ascending: true });
 
     if (error) throw error;
-    const rows = (data ?? []) as any as EmpRow[];
+    const rows = (data ?? []) as EmpRow[];
     setEmpCount(rows.length);
     return rows;
   }
@@ -121,29 +120,34 @@ async function handleSave() {
 
     const { data, error } = await q;
     if (error) throw error;
-    return (data ?? []) as any as ShiftRow[];
+    return (data ?? []) as ShiftRow[];
   }
 
-  async function fetchAbsencesByRange(empIds: string[]) {
-    const start = RANGE[0];
-    const end = RANGE[RANGE.length - 1];
-    const { data, error } = await supabase
-      .from("absences")
-      .select("employee_id, start_date, end_date, status")
-      .in("employee_id", empIds)
-      .neq("status", "declined"); // vain pending/approved blokkaa
-    if (error) throw error;
+  type AbsenceRow = {
+  employee_id: string;
+  start_date: string;             // YYYY-MM-DD
+  end_date: string | null;        // voi olla null → käytä start_datea
+  status: "pending" | "approved" | "declined";
+};
 
-    // Tee date-haku kevyesti klientissä (välttää monimutkaisen SQL:n)
-    return (data ?? []).filter((r: any) => {
-      const s = r.start_date as string;
-      const e = (r.end_date as string) || s;
-      const min = Math.min(...RANGE.map((d) => d.localeCompare(s)));
-      const max = Math.max(...RANGE.map((d) => d.localeCompare(e)));
-      // jos jokin päivä RANGE:ssa osuu [s,e]:een, pidetään blokkaavana
-      return !(RANGE.every((day) => day < s || day > e));
-    });
-  }
+async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
+  const { data, error } = await supabase
+    .from("absences")
+    .select("employee_id, start_date, end_date, status")
+    .in("employee_id", empIds)
+    .neq("status", "declined"); // vain pending/approved blokkaa
+
+  if (error) throw error;
+  const rows = (data ?? []) as AbsenceRow[];
+
+  // Pidä vain poissaolot, jotka osuvat johonkin RANGE-päivään
+  return rows.filter((r) => {
+    const s = r.start_date;
+    const e = r.end_date ?? s;
+    return RANGE.some((day) => day >= s && day <= e);
+  });
+}
+
 
   // ————— ACTIONS —————
 
@@ -167,7 +171,7 @@ async function handleSave() {
       // Map helpot tarkistukset
       const existingSet = new Set(existing.map((s) => `${s.employee_id}|${s.work_date}`));
       const absenceMap = new Map<string, { s: string; e: string }[]>();
-      absences.forEach((a: any) => {
+      absences.forEach((a: { employee_id: string; start_date: string; end_date?: string | null }) => {
         const arr = absenceMap.get(a.employee_id) ?? [];
         arr.push({ s: a.start_date, e: a.end_date ?? a.start_date });
         absenceMap.set(a.employee_id, arr);
@@ -206,10 +210,10 @@ async function handleSave() {
 
       setLastSavedAt(formatTime());
       toast.success(`Generoitu ${batch.length} vuoroa.`);
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Generointi epäonnistui");
-    } finally {
+   } catch (e) {
+  console.error(e);
+  toast.error("Generointi epäonnistui");
+} finally {
       setIsGenerating(false);
     }
   };

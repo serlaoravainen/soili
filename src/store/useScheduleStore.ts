@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
-import type { Employee, DateInfo, ShiftType } from "@/app/types"; // ✅ käytä virallista tyyppiä
+import type { Employee, DateInfo, } from "@/app/types"; // ✅ käytä virallista tyyppiä
 
 
 type ShiftRow = {
@@ -183,7 +183,7 @@ redo: () => {
 
 
   autoGenerate: () => {
-    const { employees, dates, shiftsMap, undoStack } = get();
+    const { employees, dates, shiftsMap, } = get();
     const nextMap = { ...shiftsMap };
     const batch: Pending[] = [];
 

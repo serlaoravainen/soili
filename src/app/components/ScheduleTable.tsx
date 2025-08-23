@@ -16,12 +16,7 @@ import { useScheduleStore } from "@/store/useScheduleStore";
 
 type DateCell = DateInfo & { iso: string };
 
-type ShiftRow = {
-  employee_id: string;
-  work_date: string; // ISO: YYYY-MM-DD
-  type: "normal" | "locked" | "absent" | "holiday";
-  hours: number | null;
-};
+
 
 interface ScheduleTableProps {
   employees?: Employee[]; // säilytetään signatuuri
