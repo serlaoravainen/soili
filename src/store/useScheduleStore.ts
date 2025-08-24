@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
+import { persist, createJSONStorage } from "zustand/middleware";
 
 // KÄYTÄ YHTÄ TOTUUTTA: ota tyypit yhdestä paikasta
 import type { Employee, DateInfo } from "@/app/types";
@@ -34,6 +35,7 @@ type PendingChange = {
 };
 
 type State = {
+
   // Hydratoitu perusdata
   employees: Employee[];
   dates: DateCell[];
@@ -57,9 +59,9 @@ type State = {
   resetFilters: () => void;
 
   startDateISO: string;
-  days: number;
+  days: 7 | 10 | 14 | 30;
 
-  setRange: (startDateISO: string, days: number) => void;
+  setRange: (startISO: string, days: State["days"]) => void;
   setStartDate: (startDateISO: string) => void;
   shiftRange: (deltaDays: number) => void;
 
@@ -83,6 +85,7 @@ function keyOf(empId: string, iso: string) {
 }
 
 export const useScheduleStore = create<State>()(
+  persist(
   devtools((set, get) => ({
     employees: [],
     dates: [],
@@ -92,7 +95,7 @@ export const useScheduleStore = create<State>()(
     redoStack: [],
     dirty: false,
 
-    startDateISO: new Date().toISOString().substring(0, 10),
+    startDateISO: new Date().toISOString().slice(0, 10),
     days: 10,
 
     hydrate: ({ employees, dates, shifts }) => {
@@ -173,7 +176,7 @@ export const useScheduleStore = create<State>()(
       });
     },
 
- setRange: (startDateISO: string, days: number) => set({ startDateISO, days }),
+ setRange: (startISO, days) => set({ startDateISO: startISO, days }),
 
 setStartDate: (startDateISO: string) => set({ startDateISO }),
 
@@ -317,5 +320,20 @@ shiftRange: (deltaDays: number) => {
         dirty: true,
       });
     },
-  }))
+  })),
+    {
+    name: "schedule-ui", // avain localStorageen
+    version: 1,
+    storage:
+      typeof window !== "undefined"
+        ? createJSONStorage(() => localStorage)
+        : undefined,
+    // tallennetaan vain nämä kentät
+    partialize: (state) => ({
+      startDateISO: state.startDateISO,
+      days: state.days,
+    }),
+  }
+  )
 );
+
