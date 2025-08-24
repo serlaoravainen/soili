@@ -4,6 +4,7 @@ import { useScheduleStore } from "@/store/useScheduleStore";
 import React, { useMemo, useRef, useState } from "react";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
+import { Checkbox } from "./ui/checkbox";
 import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -22,7 +23,10 @@ import {
   Search,
   Bell,
   Check,
-  ChevronDown
+  ChevronDown,
+  X,
+  Building,
+  Users
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
@@ -33,7 +37,7 @@ import { supabase } from "@/lib/supaBaseClient";
 
 // pvm apurit
 function addDaysISO(iso: string, add: number) {
-  const d = new Date(iso);
+  const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + add);
   return d.toISOString().slice(0, 10);
 }
@@ -475,14 +479,9 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
     <Search className="w-4 h-4 mr-2" />
     Haku
   </Button>
-  <Button
-    variant="ghost"
-    size="sm"
-    onClick={() => toast.info("Suodatus tulee pian (osasto, tuntialue, tila)")}
-  >
-    <Filter className="w-4 h-4 mr-2" />
-    Suodatin
-  </Button>
+
+  <FilterPopover />
+
 
   {/* Aikajakson valitsin */}
   <PeriodSelector />
@@ -612,6 +611,157 @@ function PeriodSelector() {
               </button>
             );
           })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function FilterPopover() {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+
+const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
+const setFilters = useScheduleStore((s) => s.setFilters) ?? ((_: Partial<typeof DEFAULT_FILTERS>) => {});
+const resetFilters = useScheduleStore((s) => s.resetFilters) ?? (() => {});
+
+const employees = useScheduleStore((s) => s.employees) ?? [];
+
+  const availableDepartments = useMemo(
+    () => Array.from(new Set(employees.map((e) => e.department))).filter(Boolean),
+    [employees]
+  );
+  const stateFilterActive = filters.showActive !== filters.showInactive;
+  const activeFilterCount =
+    (filters.departments.length > 0 ? filters.departments.length : 0) +
+    (stateFilterActive ? 1 : 0);
+    
+
+  const handleDepartmentToggle = (dept: string) => {
+    const exists = filters.departments.includes(dept);
+    setFilters({
+      departments: exists
+        ? filters.departments.filter((d) => d !== dept)
+        : [...filters.departments, dept],
+    });
+  };
+
+  const handleActiveToggle = () => setFilters({ showActive: !filters.showActive });
+  const handleInactiveToggle = () => setFilters({ showInactive: !filters.showInactive });
+  const handleClearFilters = () => resetFilters();
+
+  return (
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger asChild>
+        <div
+          className={`
+            inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium
+            ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2
+            focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none
+            disabled:opacity-50 hover:bg-accent hover:text-accent-foreground h-9 px-3 cursor-pointer
+            ${activeFilterCount > 0 ? "bg-primary text-primary-foreground hover:bg-primary/90" : ""}
+          `}
+        >
+          <Filter className="w-4 h-4 mr-2" />
+          Suodatin
+          {activeFilterCount > 0 && (
+            <Badge variant="secondary" className="ml-2 bg-white text-primary text-xs">
+              {activeFilterCount}
+            </Badge>
+          )}
+        </div>
+      </PopoverTrigger>
+      <PopoverContent className="w-80 p-4" align="center">
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <h3 className="font-medium">Suodattimet</h3>
+            {activeFilterCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearFilters}
+                className="h-6 px-2 text-xs"
+              >
+                <X className="w-3 h-3 mr-1" />
+                Tyhjennä
+              </Button>
+            )}
+          </div>
+
+          <Separator />
+
+          {/* Department Filters */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Building className="w-4 h-4 text-muted-foreground" />
+              <span className="font-medium text-sm">Osastot</span>
+            </div>
+            <div className="space-y-2 pl-6">
+              {availableDepartments.map((department) => (
+                <div key={department} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`dept-${department}`}
+                    checked={filters.departments.includes(department)}
+                    onCheckedChange={() => handleDepartmentToggle(department)}
+                  />
+                  <label htmlFor={`dept-${department}`} className="text-sm cursor-pointer">
+                    {department}
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Employee Status Filters */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Users className="w-4 h-4 text-muted-foreground" />
+              <span className="font-medium text-sm">Työntekijöiden tila</span>
+            </div>
+            <div className="space-y-2 pl-6">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="show-active"
+                  checked={filters.showActive}
+                  onCheckedChange={handleActiveToggle}
+                />
+                <label htmlFor="show-active" className="text-sm cursor-pointer">
+                  Näytä aktiiviset työntekijät
+                </label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="show-inactive"
+                  checked={filters.showInactive}
+                  onCheckedChange={handleInactiveToggle}
+                />
+                <label htmlFor="show-inactive" className="text-sm cursor-pointer">
+                  Näytä ei-aktiiviset työntekijät
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* Filter Summary */}
+          {activeFilterCount > 0 && (
+            <>
+              <Separator />
+              <div className="text-xs text-muted-foreground">
+                {filters.departments.length > 0 && (
+                  <div>Osastot: {filters.departments.join(", ")}</div>
+                )}
+                {stateFilterActive && (
+                  <div>
+                    Tila: {filters.showActive ? 'Vain aktiiviset' : 'Vain ei-aktiiviset'}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </PopoverContent>
     </Popover>

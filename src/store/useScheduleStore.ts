@@ -124,7 +124,7 @@ export const useScheduleStore = create<State>()(
         // ---Filtterit---
         filters: {
           departments: [],
-          showActive: true,
+          showActive: false,
           showInactive: false,
         },
 
@@ -133,7 +133,7 @@ export const useScheduleStore = create<State>()(
 
         resetFilters: () =>
           set({
-            filters: { departments: [], showActive: true, showInactive: true },
+            filters: { departments: [], showActive: false, showInactive: false },
             }),
       });
     },
