@@ -617,26 +617,36 @@ function PeriodSelector() {
   );
 }
 
+
+const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+
 function FilterPopover() {
   const [isOpen, setIsOpen] = useState(false);
+  const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
+  const setFilters = useScheduleStore((s) => s.setFilters) ?? (() => {});
+  const resetFilters = useScheduleStore((s) => s.resetFilters) ?? (() => {});
 
-  const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+ const employeesFromStore = useScheduleStore((s) => s.employees);
+const employees = useMemo(() => employeesFromStore ?? [], [employeesFromStore]);
 
-const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
-const setFilters = useScheduleStore((s) => s.setFilters) ?? ((_: Partial<typeof DEFAULT_FILTERS>) => {});
-const resetFilters = useScheduleStore((s) => s.resetFilters) ?? (() => {});
+const employeeDepartments = useMemo(
+  () => employees.map((e) => e.department),
+  [employees]
+);
 
-const employees = useScheduleStore((s) => s.employees) ?? [];
+const availableDepartments = useMemo(
+  () => Array.from(new Set(employeeDepartments)).filter(Boolean) as string[],
+  [employeeDepartments]
+);
 
-  const availableDepartments = useMemo(
-    () => Array.from(new Set(employees.map((e) => e.department))).filter(Boolean),
-    [employees]
-  );
+
+  // 2) Tila-suodatus on aktiivinen vain jos vain toinen toggle on päällä (XOR)
   const stateFilterActive = filters.showActive !== filters.showInactive;
+
+  // 3) Badge: 1 piste osastofiltteristä (jos valittuja), 1 piste tila-XOR:sta
   const activeFilterCount =
-    (filters.departments.length > 0 ? filters.departments.length : 0) +
+    (filters.departments.length > 0 ? 1 : 0) +
     (stateFilterActive ? 1 : 0);
-    
 
   const handleDepartmentToggle = (dept: string) => {
     const exists = filters.departments.includes(dept);
@@ -649,7 +659,11 @@ const employees = useScheduleStore((s) => s.employees) ?? [];
 
   const handleActiveToggle = () => setFilters({ showActive: !filters.showActive });
   const handleInactiveToggle = () => setFilters({ showInactive: !filters.showInactive });
-  const handleClearFilters = () => resetFilters();
+
+  const handleClearFilters = () => {
+    resetFilters();
+    setIsOpen(false); // 4) UX: tyhjennä -> sulje
+  };
 
   return (
     <Popover open={isOpen} onOpenChange={setIsOpen}>
@@ -672,18 +686,14 @@ const employees = useScheduleStore((s) => s.employees) ?? [];
           )}
         </div>
       </PopoverTrigger>
+
       <PopoverContent className="w-80 p-4" align="center">
         <div className="space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between">
             <h3 className="font-medium">Suodattimet</h3>
-            {activeFilterCount > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClearFilters}
-                className="h-6 px-2 text-xs"
-              >
+            {(filters.departments.length > 0 || stateFilterActive) && (
+              <Button variant="ghost" size="sm" onClick={handleClearFilters} className="h-6 px-2 text-xs">
                 <X className="w-3 h-3 mr-1" />
                 Tyhjennä
               </Button>
@@ -724,21 +734,13 @@ const employees = useScheduleStore((s) => s.employees) ?? [];
             </div>
             <div className="space-y-2 pl-6">
               <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="show-active"
-                  checked={filters.showActive}
-                  onCheckedChange={handleActiveToggle}
-                />
+                <Checkbox id="show-active" checked={filters.showActive} onCheckedChange={handleActiveToggle} />
                 <label htmlFor="show-active" className="text-sm cursor-pointer">
                   Näytä aktiiviset työntekijät
                 </label>
               </div>
               <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="show-inactive"
-                  checked={filters.showInactive}
-                  onCheckedChange={handleInactiveToggle}
-                />
+                <Checkbox id="show-inactive" checked={filters.showInactive} onCheckedChange={handleInactiveToggle} />
                 <label htmlFor="show-inactive" className="text-sm cursor-pointer">
                   Näytä ei-aktiiviset työntekijät
                 </label>
@@ -747,17 +749,13 @@ const employees = useScheduleStore((s) => s.employees) ?? [];
           </div>
 
           {/* Filter Summary */}
-          {activeFilterCount > 0 && (
+          {(filters.departments.length > 0 || stateFilterActive) && (
             <>
               <Separator />
               <div className="text-xs text-muted-foreground">
-                {filters.departments.length > 0 && (
-                  <div>Osastot: {filters.departments.join(", ")}</div>
-                )}
+                {filters.departments.length > 0 && <div>Osastot: {filters.departments.join(", ")}</div>}
                 {stateFilterActive && (
-                  <div>
-                    Tila: {filters.showActive ? 'Vain aktiiviset' : 'Vain ei-aktiiviset'}
-                  </div>
+                  <div>Tila: {filters.showActive ? "Vain aktiiviset" : "Vain ei-aktiiviset"}</div>
                 )}
               </div>
             </>
@@ -767,6 +765,7 @@ const employees = useScheduleStore((s) => s.employees) ?? [];
     </Popover>
   );
 }
+
 
 
 export default Toolbar;

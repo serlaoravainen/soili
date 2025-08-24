@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Calendar, Clock, Users, AlertCircle, Lock, Plane, Plus } from "lucide-react";
+import { Calendar, Clock, Users, AlertCircle, Lock, Plane, Plus, Filter } from "lucide-react";
 import { ShiftType, Employee, DateInfo } from "../types";
 import { supabase } from "@/lib/supaBaseClient";
 import { toast } from "sonner";
@@ -11,6 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useScheduleStore } from "@/store/useScheduleStore";
+
+const EMPTY_EMPLOYEES: Employee[] = [];
 
 
 
@@ -61,13 +63,34 @@ function fiDayMonth(d: Date) {
   return `${day}.${month}`;
 }
 
+const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+
+
 const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
-const startISO = useScheduleStore(s => s.startDateISO);
-const days = useScheduleStore(s => s.days);
-const employees = useScheduleStore(s => s.employees);
-const shiftsMap = useScheduleStore(s => s.shiftsMap);
-const activeEmployees = employees;
+const startISO = useScheduleStore((s) => s.startDateISO);
+const days = useScheduleStore((s) => s.days);
+
+
+
+const shiftsMap = useScheduleStore((s) => s.shiftsMap) ?? {};
+const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
+
+//tila-filtteri on aktiivinen, jos vain toinen on päällä
+const stateFilterActive = filters.showActive !== filters.showInactive;
+const employeesFromStore = useScheduleStore(s => s.employees);
+
+  const filteredEmployees = useMemo(() => {
+  const employees = employeesFromStore ?? EMPTY_EMPLOYEES; // fallback sisällä
+  return employees.filter(emp => {
+    if (filters.departments.length > 0 && !filters.departments.includes(emp.department)) return false;
+    if (stateFilterActive) {
+      if (filters.showActive && !emp.isActive) return false;
+      if (filters.showInactive && emp.isActive) return false;
+    }
+    return true;
+  });
+}, [employeesFromStore, filters, stateFilterActive]);
   
   const [loading, setLoading] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ employee: string; day: number } | null>(null);
@@ -109,7 +132,7 @@ const mappedEmp: Employee[] = (empData ?? []).map((row: EmployeeRow) => ({
   department: row.department,
   isActive: !!row.is_active,
   shifts: [] as ShiftType[],      // ✅ lisää shifts placeholder
-})).filter((e) => e.isActive);
+}));
 
 
         const { data: s, error: sErr } = await supabase
@@ -237,12 +260,38 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
             <Calendar className="w-6 h-6 text-primary" />
             <CardTitle className="text-2xl text-primary">Vuorot</CardTitle>
           </div>
-          <Badge variant="secondary" className="px-3 py-1">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="px-3 py-1">
             <Users className="w-4 h-4 mr-2" />
-            {activeEmployees.length} työntekijää
-          </Badge>
-        </div>
+            {filteredEmployees.length} työntekijää
+            </Badge>
+            {(filters.departments.length > 0 || stateFilterActive) && (
+              <Badge variant="outline" className="px-3 py-1">
+                <Filter className="w-3 h-3 mr-1" />
+                Suodatettu
+              </Badge>
+              )}
+              </div>
+          </div>
+
       </CardHeader>
+  {(filters.departments.length > 0 || stateFilterActive) && (
+    <div className="px-6 pb-2">
+      <div className="text-sm text-muted-foreground bg-accent/40 px-3 py-2 rounded-md inline-flex items-center gap-2">
+        <Filter className="w-4 h-4" />
+        <div className="flex flex-wrap gap-x-3 gap-y-1">
+          {stateFilterActive && (
+            <span>{filters.showActive ? "Vain aktiiviset työntekijät" : "Vain ei-aktiiviset työntekijät"}</span>
+          )}
+          {filters.departments.length > 0 && (
+            <span>Osastot: {filters.departments.join(", ")}</span>
+          )}
+        </div>
+      </div>
+    </div>
+  )}
+
+
       <CardContent className="p-0">
         <div className="overflow-x-auto">
           <div className="min-w-full">
@@ -265,8 +314,15 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
             </div>
 
             {/* Employee Rows */}
-            <div className="divide-y divide-border">
-              {activeEmployees.map((employee) => (
+              <div className="divide-y divide-border">
+              {filteredEmployees.length === 0 ? (
+                <div className="p-12 text-center text-muted-foreground">
+                  <Filter className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>Ei työntekijöitä näytettäväksi nykyisillä suodattimilla</p>
+                  <p className="text-sm mt-1">Muuta suodattimia nähdäksesi työntekijöitä</p>
+                </div>
+              ) : filteredEmployees.map((employee) => (
+
                 <div
                   key={employee.id}
                   className="grid gap-px hover:bg-accent/30 transition-colors"
@@ -274,7 +330,12 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
                 >
                   <div className="p-4 bg-background flex items-center justify-between">
                     <div>
-                      <span className="font-medium">{employee.name}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{employee.name}</span>
+                        {!employee.isActive && (
+                          <Badge variant="destructive" className="text-xs">Ei-aktiivinen</Badge>
+                        )}
+                      </div>
                       <div className="text-xs text-muted-foreground">{employee.department}</div>
                     </div>
                     <Badge variant="outline" className="text-xs">
@@ -441,17 +502,17 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
                   <div className="flex items-center space-x-2">
                     <Users className="w-4 h-4 text-muted-foreground" />
                     <span className="font-medium text-sm">
-                      Yhteensä ({activeEmployees.length} työntekijää)
+                      Yhteensä ({filteredEmployees.length} työntekijää)
                     </span>
                   </div>
                 </div>
                 {dates.map((_, dayIndex) => {
-                  const dayTotal = activeEmployees.reduce((total, emp) => {
+                  const dayTotal = filteredEmployees.reduce((total, emp) => {
                     const s = getShift(emp.id, dayIndex);
                     return total + (s?.hours || 0);
                   }, 0);
 
-                  const filledCount = activeEmployees.filter(
+                  const filledCount = filteredEmployees.filter(
                     (emp) => getShift(emp.id, dayIndex)?.type !== "empty"
                   ).length;
 
