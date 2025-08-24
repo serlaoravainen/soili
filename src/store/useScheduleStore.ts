@@ -19,6 +19,12 @@ export type ShiftRow = {
   type: "normal" | "locked" | "absent" | "holiday";
   hours: number | null; // null sallitaan, mutta tallennetaan 0:ksi kun kirjoitetaan DB:hen
 };
+// Suodattimien tyyppi
+export type Filters = {
+  departments: string[];
+  showActive: boolean;
+  showInactive: boolean;
+};
 
 // Sisäinen muutos, jota kerätään saveAll:lle
 type PendingChange = {
@@ -44,6 +50,11 @@ type State = {
 
   // UI-signaalit
   dirty: boolean;
+
+  // Filtterit
+  filters: Filters;
+  setFilters: (partial: Partial<Filters>) => void;
+  resetFilters: () => void;
 
   startDateISO: string;
   days: number;
@@ -109,6 +120,21 @@ export const useScheduleStore = create<State>()(
         undoStack: [],
         redoStack: [],
         dirty: false,
+
+        // ---Filtterit---
+        filters: {
+          departments: [],
+          showActive: true,
+          showInactive: false,
+        },
+
+        setFilters: (partial) =>
+          set((state) => ({ filters: { ...state.filters, ...partial } })),
+
+        resetFilters: () =>
+          set({
+            filters: { departments: [], showActive: true, showInactive: true },
+            }),
       });
     },
 
