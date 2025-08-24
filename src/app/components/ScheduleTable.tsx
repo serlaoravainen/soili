@@ -38,11 +38,10 @@ interface ScheduleTableProps {
   employees?: Employee[]; // säilytetään signatuuri
 }
 
-const START_ISO = "2025-08-18"; // MA 18.8
-const DAYS = 10;
 
 function addDaysISO(iso: string, add: number) {
-  const d = new Date(iso);
+  // "T00:00:00" poistaa aikavyöhykkeen heiton
+  const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + add);
   return d.toISOString().slice(0, 10);
 }
@@ -63,6 +62,12 @@ function fiDayMonth(d: Date) {
 }
 
 const ScheduleTable: React.FC<ScheduleTableProps> = () => {
+
+const startISO = useScheduleStore(s => s.startDateISO);
+const days = useScheduleStore(s => s.days);
+const employees = useScheduleStore(s => s.employees);
+const shiftsMap = useScheduleStore(s => s.shiftsMap);
+const activeEmployees = employees;
   
   const [loading, setLoading] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ employee: string; day: number } | null>(null);
@@ -72,13 +77,13 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
-const dates: DateCell[] = useMemo(() => {
-  return Array.from({ length: DAYS }).map((_, i): DateCell => {
-    const iso = addDaysISO(START_ISO, i);
-    const d = new Date(iso + "T00:00:00");
-    return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
-  });
-}, []);
+  const dates: DateCell[] = useMemo(() => {
+    return Array.from({ length: days }).map((_, i): DateCell => {
+      const iso = addDaysISO(startISO, i);
+      const d = new Date(iso + "T00:00:00");
+      return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
+    });
+  }, [startISO, days]);
 
   // Vuorot mapattuna: key = `${employee_id}|${work_date}`
   
@@ -160,12 +165,11 @@ setAbsencesMap(absMap);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dates.length]);
-  
-const employees = useScheduleStore(s => s.employees);
+  }, [startISO, days]);
+
+
+
 const [absencesMap, setAbsencesMap] = useState<Record<string, { type: "absent" | "holiday"; reason: string }>>({});
-const shiftsMap = useScheduleStore(s => s.shiftsMap);
-const activeEmployees = employees;
 
   // Lue solun vuoro mapista
 function getShift(empId: string, dayIndex: number): ShiftType {
@@ -244,7 +248,10 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
           <div className="min-w-full">
             {/* Header */}
             <div className="bg-muted/50 border-b">
-              <div className="grid grid-cols-11 gap-px">
+              <div
+              className="grid gap-px"
+              style={{ gridTemplateColumns: `minmax(200px,280px) repeat(${days}, minmax(96px, 1fr))` }}
+              >
                 <div className="p-4 bg-background">
                   <span className="text-sm font-medium text-muted-foreground">Työntekijä</span>
                 </div>
@@ -262,7 +269,8 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
               {activeEmployees.map((employee) => (
                 <div
                   key={employee.id}
-                  className="grid grid-cols-11 gap-px hover:bg-accent/30 transition-colors"
+                  className="grid gap-px hover:bg-accent/30 transition-colors"
+                  style={{ gridTemplateColumns: `minmax(200px,280px) repeat(${days}, minmax(96px, 1fr))` }}
                 >
                   <div className="p-4 bg-background flex items-center justify-between">
                     <div>
@@ -424,7 +432,11 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
 
             {/* Summary Row */}
             <div className="bg-accent/50 border-t-2 border-primary/20">
-              <div className="grid grid-cols-11 gap-px">
+              <div
+              className="grid gap-px"
+              style={{ gridTemplateColumns: `minmax(200px,280px) repeat(${days}, minmax(96px, 1fr))` }}
+              >
+
                 <div className="p-4 bg-background">
                   <div className="flex items-center space-x-2">
                     <Users className="w-4 h-4 text-muted-foreground" />
