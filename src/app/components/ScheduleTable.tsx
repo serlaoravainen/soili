@@ -12,7 +12,6 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useScheduleStore } from "@/store/useScheduleStore";
 
-const EMPTY_EMPLOYEES: Employee[] = [];
 
 
 
@@ -57,13 +56,26 @@ function fiWeekdayShort(d: Date) {
     .slice(0, 2);
 }
 
-function fiDayMonth(d: Date) {
-  const day = d.getDate();
-  const month = d.getMonth() + 1;
-  return `${day}.${month}`;
+ function fiDayMonth(d: Date) {
+   const day = d.getDate();
+   const month = d.getMonth() + 1;
+   return `${day}.${month}`;
+ }
+
+// 🆕 FI-normalisointi (lowercase + diakriittien poisto)
+function normalizeFi(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
-const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+ const DEFAULT_FILTERS = {
+  departments: [] as string[],
+  showActive: false,
+  showInactive: false,
+  searchTerm: "",
+}
 
 
 const ScheduleTable: React.FC<ScheduleTableProps> = () => {
@@ -78,19 +90,33 @@ const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
 
 //tila-filtteri on aktiivinen, jos vain toinen on päällä
 const stateFilterActive = filters.showActive !== filters.showInactive;
-const employeesFromStore = useScheduleStore(s => s.employees);
 
-  const filteredEmployees = useMemo(() => {
-  const employees = employeesFromStore ?? EMPTY_EMPLOYEES; // fallback sisällä
-  return employees.filter(emp => {
-    if (filters.departments.length > 0 && !filters.departments.includes(emp.department)) return false;
+const employees = useScheduleStore(s => s.employees);
+const filteredEmployees = useMemo(() => {
+  const term = normalizeFi((filters.searchTerm ?? "").trim());
+  return employees.filter((emp) => {
+    // department
+    if (filters.departments.length > 0 && !filters.departments.includes(emp.department)) {
+      return false;
+    }
+    // active/inactive XOR
     if (stateFilterActive) {
       if (filters.showActive && !emp.isActive) return false;
       if (filters.showInactive && emp.isActive) return false;
     }
+    // search (nimi + email + osasto)
+    if (term.length > 0) {
+      const hay =
+        normalizeFi(emp.name) +
+        " " +
+        normalizeFi(emp.email) +
+        " " +
+        normalizeFi(emp.department);
+      if (!hay.includes(term)) return false;
+    }
     return true;
   });
-}, [employeesFromStore, filters, stateFilterActive]);
+}, [employees, filters, stateFilterActive]);
   
   const [loading, setLoading] = useState(true);
   const [selectedCell, setSelectedCell] = useState<{ employee: string; day: number } | null>(null);
@@ -275,9 +301,9 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
           </div>
 
       </CardHeader>
-  {(filters.departments.length > 0 || stateFilterActive) && (
+  {(filters.departments.length > 0 || stateFilterActive || (filters.searchTerm ?? "").trim()) && (
     <div className="px-6 pb-2">
-      <div className="text-sm text-muted-foreground bg-accent/40 px-3 py-2 rounded-md inline-flex items-center gap-2">
+      <div className="text-sm text-muted-foreground bg-accent/40 px-3 py-2 rounded-md inline-flex items-center gap-3 flex-wrap">
         <Filter className="w-4 h-4" />
         <div className="flex flex-wrap gap-x-3 gap-y-1">
           {stateFilterActive && (
@@ -286,6 +312,9 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
           {filters.departments.length > 0 && (
             <span>Osastot: {filters.departments.join(", ")}</span>
           )}
+          {(filters.searchTerm ?? "").trim() && (
+            <span>Haku: “{filters.searchTerm.trim()}”</span>
+            )}
         </div>
       </div>
     </div>

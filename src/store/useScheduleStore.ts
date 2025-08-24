@@ -25,6 +25,7 @@ export type Filters = {
   departments: string[];
   showActive: boolean;
   showInactive: boolean;
+  searchTerm: string;
 };
 
 // Sisäinen muutos, jota kerätään saveAll:lle
@@ -55,7 +56,7 @@ type State = {
 
   // Filtterit
   filters: Filters;
-  setFilters: (partial: Partial<Filters>) => void;
+  setFilters: (patch: Partial<Filters>) => void;
   resetFilters: () => void;
 
   startDateISO: string;
@@ -129,6 +130,7 @@ export const useScheduleStore = create<State>()(
           departments: [],
           showActive: false,
           showInactive: false,
+          searchTerm: "",
         },
 
         setFilters: (partial) =>
@@ -136,7 +138,7 @@ export const useScheduleStore = create<State>()(
 
         resetFilters: () =>
           set({
-            filters: { departments: [], showActive: false, showInactive: false },
+            filters: { departments: [], showActive: false, showInactive: false, searchTerm: "", },
             }),
       });
     },

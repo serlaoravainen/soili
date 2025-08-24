@@ -469,20 +469,10 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
 </div>
           </div>
 
-   {/* Center Section - View Options */}
+    {/* Center Section - View Options */}
 <div className="flex items-center gap-2">
-  <Button
-    variant="ghost"
-    size="sm"
-    onClick={() => toast.info("Haku avautuu myöhemmin globaalina filttering-näkymänä")}
-  >
-    <Search className="w-4 h-4 mr-2" />
-    Haku
-  </Button>
-
+  <SearchPopover />  {/* 🆕 oikea haku */}
   <FilterPopover />
-
-
   {/* Aikajakson valitsin */}
   <PeriodSelector />
 </div>
@@ -618,7 +608,12 @@ function PeriodSelector() {
 }
 
 
-const DEFAULT_FILTERS = { departments: [] as string[], showActive: false, showInactive: false };
+const DEFAULT_FILTERS = {
+  departments: [] as string[],
+  showActive: false,
+  showInactive: false,
+  searchTerm: "", 
+  };
 
 function FilterPopover() {
   const [isOpen, setIsOpen] = useState(false);
@@ -769,3 +764,96 @@ const availableDepartments = useMemo(
 
 
 export default Toolbar;
+
+
+function SearchPopover() {
+  const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
+  const setFilters = useScheduleStore((s) => s.setFilters);
+
+  const [open, setOpen] = useState(false);
+  const [localTerm, setLocalTerm] = useState(filters.searchTerm ?? "");
+  const debTimer = React.useRef<number | null>(null);
+
+  const handleSearchChange = (val: string) => {
+    setLocalTerm(val);
+    if (debTimer.current) window.clearTimeout(debTimer.current);
+    debTimer.current = window.setTimeout(() => {
+      setFilters({ searchTerm: val });
+    }, 200);
+  };
+
+  const clear = () => {
+    setLocalTerm("");
+    setFilters({ searchTerm: "" });
+  };
+
+React.useEffect(() => {
+  if (!open) return;
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setLocalTerm("");
+      setFilters({ searchTerm: "" });
+    }
+  };
+  window.addEventListener("keydown", onKey);
+  return () => window.removeEventListener("keydown", onKey);
+}, [open, setFilters]);
+
+  const isActive = (filters.searchTerm ?? "").trim().length > 0;
+
+  return (
+      <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setLocalTerm(filters.searchTerm ?? "");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <Button variant={isActive ? "default" : "ghost"} size="sm" className="h-9">
+          <Search className="w-4 h-4 mr-2" />
+          Haku
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-96 p-4" align="center">
+        <div className="space-y-3">
+          <div className="text-base font-semibold">Haku</div>
+          <div className="text-sm text-muted-foreground">Etsi työntekijöitä</div>
+          <div className="relative">
+           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
+           <input
+              className="w-full h-9 rounded-md border border-input bg-background px-3 pl-10 pr-10 text-sm outline-none focus:ring-2 focus:ring-ring"
+              placeholder="Hae nimellä, sähköpostilla tai osastolla..."
+              value={localTerm}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              autoFocus
+            />
+            {localTerm && (
+              <button
+                type="button"
+                aria-label="Tyhjennä haku"
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={clear}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Haku toimii reaaliajassa ja etsii nimestä, sähköpostista ja osastosta
+          </div>
+          {isActive && (
+            <>
+              <Separator />
+              <div className="text-xs text-muted-foreground bg-accent/50 p-2 rounded-md">
+                <Search className="w-3 h-3 inline mr-1" />
+                Hakutermi: “{filters.searchTerm}”
+                <div className="mt-1">Näytetään työntekijät jotka vastaavat hakua</div>
+              </div>
+            </>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
