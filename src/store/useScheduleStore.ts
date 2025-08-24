@@ -45,6 +45,13 @@ type State = {
   // UI-signaalit
   dirty: boolean;
 
+  startDateISO: string;
+  days: number;
+
+  setRange: (startDateISO: string, days: number) => void;
+  setStartDate: (startDateISO: string) => void;
+  shiftRange: (deltaDays: number) => void;
+
   // Toiminnot
   hydrate: (payload: {
     employees: Employee[];
@@ -73,6 +80,9 @@ export const useScheduleStore = create<State>()(
     undoStack: [],
     redoStack: [],
     dirty: false,
+
+    startDateISO: new Date().toISOString().substring(0, 10),
+    days: 10,
 
     hydrate: ({ employees, dates, shifts }) => {
       // Rakennetaan map shifteistä
@@ -136,6 +146,18 @@ export const useScheduleStore = create<State>()(
         dirty: true,
       });
     },
+
+ setRange: (startDateISO: string, days: number) => set({ startDateISO, days }),
+
+setStartDate: (startDateISO: string) => set({ startDateISO }),
+
+shiftRange: (deltaDays: number) => {
+  const { startDateISO, days } = get();
+  const d = new Date(startDateISO + "T00:00:00");
+  d.setDate(d.getDate() + deltaDays);
+  const nextStart = d.toISOString().slice(0, 10);
+  set({ startDateISO: nextStart, days });
+},
 
     saveAll: async () => {
       const { pending } = get();

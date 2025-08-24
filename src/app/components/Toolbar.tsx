@@ -6,6 +6,7 @@ import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import {
   Upload,
   RefreshCw,
@@ -20,15 +21,15 @@ import {
   Filter,
   Search,
   Bell,
+  Check,
+  ChevronDown
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
 
 
 
-// 🔧 PIDÄ synkassa ScheduleTablen kanssa (DRY: siirrä myöhemmin shared configiin)
-const START_ISO = "2025-08-18";
-const DAYS = 10;
+
 
 // pvm apurit
 function addDaysISO(iso: string, add: number) {
@@ -36,14 +37,14 @@ function addDaysISO(iso: string, add: number) {
   d.setDate(d.getDate() + add);
   return d.toISOString().slice(0, 10);
 }
-const RANGE = Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i));
+
 
 function formatTime(d = new Date()) {
   return d.toLocaleTimeString("fi-FI", { hour: "2-digit", minute: "2-digit" });
 }
 
-// ISO week (viikkonumero)
-function getISOWeek(dateIso: string) {
+
+  function getISOWeek(dateIso: string) {
   const d = new Date(dateIso + "T00:00:00");
   // ISO week algorithm
   const dayNum = (d.getUTCDay() + 6) % 7;
@@ -57,6 +58,7 @@ function getISOWeek(dateIso: string) {
     );
   return week;
 }
+
 
 type EmpRow = {
   id: string;
@@ -74,6 +76,10 @@ type ShiftRow = {
 };
 
 const Toolbar = () => {
+  const START_ISO = useScheduleStore((s) => s.startDateISO);
+  const DAYS = useScheduleStore((s) => s.days);
+  const range = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)), [START_ISO, DAYS]);
+
 
 const undo = useScheduleStore((s) => s.undo);
 const redo = useScheduleStore((s) => s.redo);
@@ -108,8 +114,8 @@ async function handleSave() {
   }
 
   async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
-    const start = RANGE[0];
-    const end = RANGE[RANGE.length - 1];
+    const start = range[0];
+    const end = range[range.length - 1];
     let q = supabase
       .from("shifts")
       .select("employee_id, work_date, type, hours")
@@ -144,7 +150,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
   return rows.filter((r) => {
     const s = r.start_date;
     const e = r.end_date ?? s;
-    return RANGE.some((day) => day >= s && day <= e);
+    return range.some((day) => day >= s && day <= e);
   });
 }
 
@@ -179,7 +185,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
 
       const batch: ShiftRow[] = [];
       for (const emp of employees) {
-        for (const d of RANGE) {
+        for (const d of range) {
           const key = `${emp.id}|${d}`;
           if (existingSet.has(key)) continue; // älä koske olemassaolevaan
 
@@ -258,7 +264,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `vuorot_${RANGE[0]}_${RANGE[RANGE.length - 1]}.csv`;
+      a.download = `vuorot_${range[0]}_${range[range.length - 1]}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("CSV ladattu");
@@ -290,7 +296,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
           .muted { color: #6b7280; font-size: 12px; margin-bottom: 12px; }
         </style>`;
       const header = `<h1>Vuorolistat</h1>
-        <div class="muted">${RANGE[0]} – ${RANGE[RANGE.length - 1]} • ${employees.length} työntekijää</div>`;
+        <div class="muted">${range[0]} – ${range[range.length - 1]} • ${employees.length} työntekijää</div>`;
 
       const rowsHtml = shifts
         .sort((a, b) =>
@@ -409,8 +415,8 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
   };
 
   // ————— UI —————
-  const weekNo = useMemo(() => getISOWeek(START_ISO), []);
-  const year = useMemo(() => new Date(START_ISO + "T00:00:00").getFullYear(), []);
+  const weekNo = useMemo(() => getISOWeek(START_ISO), [START_ISO]);
+  const year = useMemo(() => new Date(START_ISO + "T00:00:00").getFullYear(), [START_ISO]);
 
   return (
     <Card className="shadow-md border-0 bg-gradient-to-r from-background to-secondary/10">
@@ -459,33 +465,30 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
 </div>
           </div>
 
-          {/* Center Section - View Options */}
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => toast.info("Haku avautuu myöhemmin globaalina filttering-näkymänä")}
-            >
-              <Search className="w-4 h-4 mr-2" />
-              Haku
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => toast.info("Suodatus tulee pian (osasto, tuntialue, tila)")}
-            >
-              <Filter className="w-4 h-4 mr-2" />
-              Suodatin
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => toast.info("Kalenteri vaihtaa ajanjaksoa (viikko/päivä). Tulossa.")}
-            >
-              <CalIcon className="w-4 h-4 mr-2" />
-              Kalenteri
-            </Button>
-          </div>
+   {/* Center Section - View Options */}
+<div className="flex items-center gap-2">
+  <Button
+    variant="ghost"
+    size="sm"
+    onClick={() => toast.info("Haku avautuu myöhemmin globaalina filttering-näkymänä")}
+  >
+    <Search className="w-4 h-4 mr-2" />
+    Haku
+  </Button>
+  <Button
+    variant="ghost"
+    size="sm"
+    onClick={() => toast.info("Suodatus tulee pian (osasto, tuntialue, tila)")}
+  >
+    <Filter className="w-4 h-4 mr-2" />
+    Suodatin
+  </Button>
+
+  {/* Aikajakson valitsin */}
+  <PeriodSelector />
+</div>
+
+
 
           {/* Right Section - Export/Import */}
           <div className="flex items-center gap-2">
@@ -541,7 +544,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
             </span>
             <span>•</span>
             <span>
-              Jakso: {RANGE[0]} – {RANGE[RANGE.length - 1]}
+              Jakso: {range[0]} – {range[range.length - 1]}
             </span>
           </div>
           
@@ -550,5 +553,70 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
     </Card>
   );
 };
+
+// === PeriodSelector ===
+type PeriodValue = 7 | 10 | 14 | 30;
+type PeriodItem = { value: PeriodValue; label: string; description: string };
+
+const PERIODS: PeriodItem[] = [
+  { value: 7,  label: "7 päivää",  description: "Viikkonäkymä" },
+  { value: 10, label: "10 päivää", description: "Laajennettu" },
+  { value: 14, label: "14 päivää", description: "Kaksiviikkoinen" },
+  { value: 30, label: "30 päivää", description: "Kuukausinäkymä" },
+];
+
+function PeriodSelector() {
+  const days = useScheduleStore((s) => s.days);
+  const startISO = useScheduleStore((s) => s.startDateISO);
+  const setRange = useScheduleStore((s) => s.setRange);
+
+  const current = PERIODS.find((p) => p.value === days) ?? PERIODS[1];
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-9 px-3 min-w-[160px] justify-start">
+          <span className="inline-flex items-center gap-2">
+             <CalIcon className="w-4 h-4" />
+            <span>{current.label}</span>
+          <ChevronDown className="w-3 h-3" />
+          </span>
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent className="w-72 p-2" align="center">
+        <div className="px-2 py-1.5 text-sm font-medium text-muted-foreground">
+          Valitse aikajakso
+        </div>
+        <div className="space-y-1" role="menu" aria-label="Aikajakso">
+          {PERIODS.map((option) => {
+            const active = days === option.value;
+            return (
+              <button
+                key={option.value}
+                role="menuitemradio"
+                aria-checked={active}
+                onClick={() => setRange(startISO, option.value)}
+                className={`w-full flex items-center justify-between p-2 rounded-md text-left hover:bg-accent ${
+                  active ? "bg-accent" : ""
+                }`}
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm font-medium">{option.label}</span>
+                  <span className="text-xs text-muted-foreground">{option.description}</span>
+                </div>
+                <div className="flex items-center">
+                  {active && <Check className="w-4 h-4 text-primary" />}
+                </div>
+                
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 
 export default Toolbar;
