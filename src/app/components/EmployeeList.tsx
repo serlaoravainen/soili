@@ -140,6 +140,13 @@ async function handleAddEmployee() {
     setNewEmployee({ name: "", email: "", department: "", isActive: true });
     setIsAddDialogOpen(false);
     toast.success(`${added.name} lisätty`);
+      
+
+    await supabase.from("notifications").insert({
+      type: "employee_added",
+      title: "Uusi työntekijä lisätty",
+      message: `${added.name} (${added.department}) lisättiin työntekijälistaan.`,
+    });
   }
 
   // 3) POISTO

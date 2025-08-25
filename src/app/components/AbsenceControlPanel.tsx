@@ -99,31 +99,57 @@ const mapped: AbsenceRequest[] = (data as AbsenceRow[]).map((r) => {
   };
 
   // --- SUPABASE UPDATES ---
-  const handleApprove = async (requestId: string) => {
-    // Optimistinen päivitys
-    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'approved' } : r));
-    const { error } = await supabase.from('absences').update({ status: 'approved' }).eq('id', requestId);
-    if (error) {
-      console.error(error);
-      // revert
-      setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
-      toast.error('Hyväksyntä epäonnistui');
-      return;
-    }
-    toast.success('Poissaolopyyntö hyväksytty');
-  };
+const handleApprove = async (requestId: string) => {
+  // Optimistinen päivitys
+  setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'approved' } : r));
 
-  const handleDecline = async (requestId: string) => {
-    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
-    const { error } = await supabase.from('absences').update({ status: 'declined' }).eq('id', requestId);
-    if (error) {
-      console.error(error);
-      setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
-      toast.error('Hylkäys epäonnistui');
-      return;
-    }
-    toast.success('Poissaolopyyntö hylätty');
-  };
+  const target = requests.find(r => r.id === requestId);
+  const { error } = await supabase.from('absences').update({ status: 'approved' }).eq('id', requestId);
+  if (error) {
+    console.error('[ABSENCE APPROVE ERROR]', error.code, error.message, error.details);
+    // revert
+    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
+    toast.error('Hyväksyntä epäonnistui');
+    return;
+  }
+
+  // Luo ilmoitus
+  if (target) {
+    await supabase.from("notifications").insert({
+      type: "absence_approved",
+      title: "Poissaolo hyväksytty",
+      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
+    });
+  }
+
+  toast.success('Poissaolopyyntö hyväksytty');
+};
+
+
+const handleDecline = async (requestId: string) => {
+  setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
+
+  const target = requests.find(r => r.id === requestId);
+  const { error } = await supabase.from('absences').update({ status: 'declined' }).eq('id', requestId);
+  if (error) {
+    console.error('[ABSENCE DECLINE ERROR]', error.code, error.message, error.details);
+    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
+    toast.error('Hylkäys epäonnistui');
+    return;
+  }
+
+  // Luo ilmoitus
+  if (target) {
+    await supabase.from("notifications").insert({
+      type: "absence_declined",
+      title: "Poissaolo hylätty",
+      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
+    });
+  }
+
+  toast.success('Poissaolopyyntö hylätty');
+};
+
 
   // --- DERIVED LISTS (UI pysyy samana) ---
   const pendingRequests = requests.filter(req => req.status === 'pending');

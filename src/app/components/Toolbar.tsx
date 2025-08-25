@@ -7,6 +7,7 @@ import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
+import NotificationsPopover from "./ui/NotificationsPopover";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import {
   Upload,
@@ -21,7 +22,6 @@ import {
   Redo,
   Filter,
   Search,
-  Bell,
   Check,
   ChevronDown,
   X,
@@ -116,6 +116,7 @@ async function handleSave() {
     setEmpCount(rows.length);
     return rows;
   }
+
 
   async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
     const start = range[0];
@@ -220,6 +221,12 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
 
       setLastSavedAt(formatTime());
       toast.success(`Generoitu ${batch.length} vuoroa.`);
+      // Kirjaa ilmoitus
+await supabase.from("notifications").insert({
+  type: "shift_auto",
+  title: "Vuorot generoitu",
+  message: `Generoitu ${batch.length} vuoroa jaksolle ${range[0]} – ${range[range.length - 1]}.`
+});
    } catch (e) {
   console.error(e);
   toast.error("Generointi epäonnistui");
@@ -508,10 +515,8 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
             </div>
 
             <Separator orientation="vertical" className="h-8" />
+            <NotificationsPopover />
 
-            <Button variant="ghost" size="sm" onClick={() => toast.info("Ilmoitukset tulevat pian.")}>
-              <Bell className="w-4 h-4" />
-            </Button>
 
             <Button variant="ghost" size="sm" onClick={() => toast.info("Asetukset tulevat pian.")}>
               <Settings className="w-4 h-4" />
