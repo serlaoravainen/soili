@@ -9,10 +9,10 @@ import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
 import NotificationsPopover from "./ui/NotificationsPopover";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import SettingsDialog from "./SettingsDialog";
 import {
   Upload,
   RefreshCw,
-  Settings,
   Calendar as CalIcon,
   FileSpreadsheet,
   FileText,
@@ -518,9 +518,7 @@ await supabase.from("notifications").insert({
             <NotificationsPopover />
 
 
-            <Button variant="ghost" size="sm" onClick={() => toast.info("Asetukset tulevat pian.")}>
-              <Settings className="w-4 h-4" />
-            </Button>
+          <SettingsDialog />
           </div>
         </div>
 
