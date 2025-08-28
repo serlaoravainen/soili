@@ -166,16 +166,17 @@ export default function SettingsDialog() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label className="text-sm font-medium">Viikon alkupäivä</Label>
-                  <Select
-                    value={settings.general.weekStartDay}
-                    onValueChange={(v: WeekStartDay) => updateGeneralSettings("weekStartDay", v)}
-                  >
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="monday">Maanantai</SelectItem>
-                      <SelectItem value="sunday">Sunnuntai</SelectItem>
-                    </SelectContent>
-                  </Select>
+                <Select
+  value={settings.general.weekStartDay}
+  onValueChange={(v: WeekStartDay) => updateGeneralSettings("weekStartDay", v)}
+>
+  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+  <SelectContent>
+    <SelectItem value="monday">Maanantai</SelectItem>
+    <SelectItem value="sunday">Sunnuntai</SelectItem>
+  </SelectContent>
+</Select>
+
                 </div>
 
                 <div className="space-y-2">

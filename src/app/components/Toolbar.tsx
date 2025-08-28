@@ -1,7 +1,7 @@
 "use client";
 
 import { useScheduleStore } from "@/store/useScheduleStore";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
@@ -10,6 +10,7 @@ import { Separator } from "./ui/separator";
 import NotificationsPopover from "./ui/NotificationsPopover";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import SettingsDialog from "./SettingsDialog";
+import { useSettingsStore } from "@/store/useSettingsStore";
 import {
   Upload,
   RefreshCw,
@@ -30,9 +31,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
+import { alignToWeekStart } from "@/lib/dateUtils";
 
 
-
+// ——— Valikoiva, tyypitetty poiminta hashydrate-funktiolle ilman anyä ———
+type HashydrateFn = (() => void) | undefined;
+const selectHashydrate = <T extends object>(s: T): HashydrateFn =>
+  (s as unknown as { hashydrate?: () => void }).hashydrate;
 
 
 // pvm apurit
@@ -80,9 +85,33 @@ type ShiftRow = {
 };
 
 const Toolbar = () => {
+
+  const [isClient, setIsClient] = useState(false);
+  useEffect(() => { setIsClient(true); }, []);
+
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
+  const weekStartDay = useSettingsStore((s) => s.settings?.general?.weekStartDay ?? "monday");
+
+   const hashydrateSettings = useSettingsStore(selectHashydrate);
+   const hashydrateSchedule = useScheduleStore(selectHashydrate);
+
+  useEffect(() => {
+    // Aja heti mountissa ja aina hashin vaihtuessa.
+    // Järjestys: ensin asetukset -> sitten aikataulu.
+    const run = () => {
+      try { hashydrateSettings?.(); } catch {}
+      try { hashydrateSchedule?.(); } catch {}
+    };
+    run();
+    window.addEventListener("hashchange", run);
+    return () => window.removeEventListener("hashchange", run);
+  }, [hashydrateSettings, hashydrateSchedule]);
+
+
+
   const range = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)), [START_ISO, DAYS]);
+
 
 
 const undo = useScheduleStore((s) => s.undo);
@@ -536,7 +565,7 @@ await supabase.from("notifications").insert({
             </span>
             <span>•</span>
             <span>
-              Jakso: {range[0]} – {range[range.length - 1]}
+              Jakso: {isClient && range.length > 0 ? `${range[0]} – ${range[range.length - 1]}` : "—"}
             </span>
           </div>
           
@@ -561,6 +590,9 @@ function PeriodSelector() {
   const days = useScheduleStore((s) => s.days);
   const startISO = useScheduleStore((s) => s.startDateISO);
   const setRange = useScheduleStore((s) => s.setRange);
+  const weekStartDay = useSettingsStore(
+    (s) => s.settings?.general?.weekStartDay ?? "monday"
+  );
 
   const current = PERIODS.find((p) => p.value === days) ?? PERIODS[1];
 
@@ -569,13 +601,12 @@ function PeriodSelector() {
       <PopoverTrigger asChild>
         <Button variant="ghost" size="sm" className="h-9 px-3 min-w-[160px] justify-start">
           <span className="inline-flex items-center gap-2">
-             <CalIcon className="w-4 h-4" />
+            <CalIcon className="w-4 h-4" />
             <span>{current.label}</span>
-          <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="w-3 h-3" />
           </span>
         </Button>
       </PopoverTrigger>
-
       <PopoverContent className="w-72 p-2" align="center">
         <div className="px-2 py-1.5 text-sm font-medium text-muted-foreground">
           Valitse aikajakso
@@ -588,7 +619,9 @@ function PeriodSelector() {
                 key={option.value}
                 role="menuitemradio"
                 aria-checked={active}
-                onClick={() => setRange(startISO, option.value)}
+                onClick={() => {
+  setRange(startISO, option.value); // ei alignointia täällä
+}}
                 className={`w-full flex items-center justify-between p-2 rounded-md text-left hover:bg-accent ${
                   active ? "bg-accent" : ""
                 }`}
@@ -600,7 +633,6 @@ function PeriodSelector() {
                 <div className="flex items-center">
                   {active && <Check className="w-4 h-4 text-primary" />}
                 </div>
-                
               </button>
             );
           })}
@@ -609,6 +641,8 @@ function PeriodSelector() {
     </Popover>
   );
 }
+
+
 
 
 const DEFAULT_FILTERS = {

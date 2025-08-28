@@ -11,6 +11,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useScheduleStore } from "@/store/useScheduleStore";
+import { useSettingsStore } from "@/store/useSettingsStore";
+import { alignToWeekStart } from "@/lib/dateUtils";
 
 
 
@@ -42,8 +44,8 @@ interface ScheduleTableProps {
 
 function addDaysISO(iso: string, add: number) {
   // "T00:00:00" poistaa aikavyöhykkeen heiton
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + add);
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + add);
   return d.toISOString().slice(0, 10);
 }
 
@@ -82,6 +84,12 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
 const startISO = useScheduleStore((s) => s.startDateISO);
 const days = useScheduleStore((s) => s.days);
+const weekStartDay = useSettingsStore((s) => s.settings.general.weekStartDay);
+
+const alignedStart = useMemo(
+  () => alignToWeekStart(startISO, weekStartDay),
+  [startISO, weekStartDay]
+);
 
 
 
@@ -126,13 +134,17 @@ const filteredEmployees = useMemo(() => {
 
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
-  const dates: DateCell[] = useMemo(() => {
-    return Array.from({ length: days }).map((_, i): DateCell => {
-      const iso = addDaysISO(startISO, i);
-      const d = new Date(iso + "T00:00:00");
-      return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
-    });
-  }, [startISO, days]);
+const dates: DateCell[] = useMemo(() => {
+  return Array.from({ length: days }).map((_, i): DateCell => {
+    const iso = addDaysISO(alignedStart, i);
+    const d = new Date(iso + "T00:00:00Z");
+    return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
+  });
+}, [alignedStart, days]);
+
+  // Alignaa heti mountissa ja aina kun viikon aloituspäivä muuttuu,
+  // jotta näkymä on johdonmukainen myös ilman Toolbarin efektiä.
+
 
   // Vuorot mapattuna: key = `${employee_id}|${work_date}`
   

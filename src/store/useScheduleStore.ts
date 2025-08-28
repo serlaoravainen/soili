@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
 import { persist, createJSONStorage } from "zustand/middleware";
 
+
+
 // KÄYTÄ YHTÄ TOTUUTTA: ota tyypit yhdestä paikasta
 import type { Employee, DateInfo } from "@/app/types";
 
@@ -65,6 +67,8 @@ type State = {
   setRange: (startISO: string, days: State["days"]) => void;
   setStartDate: (startDateISO: string) => void;
   shiftRange: (deltaDays: number) => void;
+  hasHydrated: boolean;
+  _setHydrated: (v: boolean) => void;
 
   // Toiminnot
   hydrate: (payload: {
@@ -95,9 +99,18 @@ export const useScheduleStore = create<State>()(
     undoStack: [],
     redoStack: [],
     dirty: false,
+    hasHydrated: false,
+    _setHydrated: (v) => set({ hasHydrated: v }),
+    
+     // ---Filtterit (init + setterit juureen)---
+     filters: { departments: [], showActive: false, showInactive: false, searchTerm: "" },
+     setFilters: (partial) =>
+       set((state) => ({ filters: { ...state.filters, ...partial } })),
+     resetFilters: () =>
+       set({ filters: { departments: [], showActive: false, showInactive: false, searchTerm: "" } }),
 
-    startDateISO: new Date().toISOString().slice(0, 10),
-    days: 10,
+   startDateISO: new Date().toISOString().slice(0, 10),
+days: 10 as State["days"],
 
     hydrate: ({ employees, dates, shifts }) => {
       // Rakennetaan map shifteistä
@@ -124,22 +137,6 @@ export const useScheduleStore = create<State>()(
         undoStack: [],
         redoStack: [],
         dirty: false,
-
-        // ---Filtterit---
-        filters: {
-          departments: [],
-          showActive: false,
-          showInactive: false,
-          searchTerm: "",
-        },
-
-        setFilters: (partial) =>
-          set((state) => ({ filters: { ...state.filters, ...partial } })),
-
-        resetFilters: () =>
-          set({
-            filters: { departments: [], showActive: false, showInactive: false, searchTerm: "", },
-            }),
       });
     },
 
@@ -178,16 +175,13 @@ export const useScheduleStore = create<State>()(
       });
     },
 
- setRange: (startISO, days) => set({ startDateISO: startISO, days }),
-
+setRange: (startISO, days) => set({ startDateISO: startISO, days }),
 setStartDate: (startDateISO: string) => set({ startDateISO }),
-
 shiftRange: (deltaDays: number) => {
   const { startDateISO, days } = get();
-  const d = new Date(startDateISO + "T00:00:00");
-  d.setDate(d.getDate() + deltaDays);
-  const nextStart = d.toISOString().slice(0, 10);
-  set({ startDateISO: nextStart, days });
+  const d = new Date(startDateISO + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  set({ startDateISO: d.toISOString().slice(0, 10), days });
 },
 
     saveAll: async () => {
@@ -324,17 +318,26 @@ shiftRange: (deltaDays: number) => {
     },
   })),
     {
-    name: "schedule-ui", // avain localStorageen
-    version: 1,
-    storage:
-      typeof window !== "undefined"
-        ? createJSONStorage(() => localStorage)
-        : undefined,
-    // tallennetaan vain nämä kentät
-    partialize: (state) => ({
-      startDateISO: state.startDateISO,
-      days: state.days,
-    }),
+      name: "schedule-ui", // avain localStorageen
+      version: 1,
+      storage:
+        typeof window !== "undefined"
+          ? createJSONStorage(() => localStorage)
+          : undefined,
+      // persistoi vain nämä (ei esim. shiftsMap tms.)
+      partialize: (state) => ({
+        startDateISO: state.startDateISO,
+        days: state.days,
+      }),
+      // Kun persist-hydraus valmistuu -> merkitse valmiiksi
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) {
+          console.error("schedule-ui rehydrate failed", error);
+          return;
+        }
+        // Ei 'set' scope:ssa -> kutsu action store-instanssin kautta
+        _state?._setHydrated?.(true);
+      },
   }
   )
 );

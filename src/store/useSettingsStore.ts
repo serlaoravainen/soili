@@ -44,6 +44,8 @@ type State = {
     | { ok: false; error: string };
 
   exportToFile: () => void;
+  hasHydrated: boolean;
+  _setHydrated: (v: boolean) => void;
 };
 
 // ✅ OIKEA KOKOONPANO: persist(subscribeWithSelector(config), options)
@@ -138,13 +140,20 @@ export const useSettingsStore = create<State>()(
         a.remove();
         URL.revokeObjectURL(url);
       },
+
+      hasHydrated: false,
+      _setHydrated: (v) => set({ hasHydrated: v }),
+
     })),
     {
       name: "soili-settings-v1",
-      // ✅ persistaa vain tämän osan
-      partialize: (st) => ({ settings: st.settings }),
-      version: 1,
-      migrate: (persisted) => persisted,
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) {
+          console.error("settings-store rehydrate failed", error);
+          return;
+        }
+        _state?._setHydrated?.(true);
+      },
     }
   )
 );
