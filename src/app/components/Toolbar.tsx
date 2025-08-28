@@ -31,7 +31,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
-import { alignToWeekStart } from "@/lib/dateUtils";
 
 
 // ——— Valikoiva, tyypitetty poiminta hashydrate-funktiolle ilman anyä ———
@@ -91,7 +90,6 @@ const Toolbar = () => {
 
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
-  const weekStartDay = useSettingsStore((s) => s.settings?.general?.weekStartDay ?? "monday");
 
    const hashydrateSettings = useSettingsStore(selectHashydrate);
    const hashydrateSchedule = useScheduleStore(selectHashydrate);
@@ -133,19 +131,23 @@ async function handleSave() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ————— data hakuja joita export/healthcheck/auto-gen käyttää —————
-  async function fetchActiveEmployees(): Promise<EmpRow[]> {
-    const { data, error } = await supabase
+  // Yleinen hakufunktio: includeInactive=true -> ei suodateta is_active:lla
+  async function fetchEmployees(includeInactive: boolean): Promise<EmpRow[]> {
+    let q = supabase
       .from("employees")
       .select("id, name, email, department, is_active")
-      .eq("is_active", true)
       .order("created_at", { ascending: true });
-
+    if (!includeInactive) q = q.eq("is_active", true);
+    const { data, error } = await q;
     if (error) throw error;
     const rows = (data ?? []) as EmpRow[];
     setEmpCount(rows.length);
     return rows;
   }
-
+  // Säilytetään vanha signatuuri muulle koodille (auto-gen, import, PDF…)
+ async function fetchActiveEmployees(): Promise<EmpRow[]> {
+    return fetchEmployees(false);
+  }
 
   async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
     const start = range[0];
@@ -266,45 +268,87 @@ await supabase.from("notifications").insert({
 
 
   // 3) Export CSV (Excel avaa suoraan)
+  const exportSettings = useSettingsStore((s) => s.settings.export);
+
+
   const handleExportExcel = async () => {
     try {
-      const employees = await fetchActiveEmployees();
-      const shifts = await fetchShiftsByRange(employees.map((e) => e.id));
+      // Hae työntekijät asetuksen mukaan (mukaan myös ei-aktiiviset tarvittaessa)
+      const employees = await fetchEmployees(!!exportSettings.includeInactiveEmployees);
+      const empIds = employees.map((e) => e.id);
+      const shifts = await fetchShiftsByRange(empIds);
       const byId = new Map(employees.map((e) => [e.id, e]));
-      const header = [
-        "employee_name",
-        "employee_email",
-        "department",
-        "work_date",
-        "type",
-        "hours",
-      ];
 
-      const rows = shifts
-        .sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
-        .map((s) => {
-          const emp = byId.get(s.employee_id)!;
-          return [
-            emp?.name ?? "",
-            emp?.email ?? "",
-            emp?.department ?? "",
-            s.work_date,
-            s.type,
-            s.hours ?? 0,
-          ];
-        });
+      // Dynaaminen header asetusten mukaan
+      const header: string[] = [];
+      if (exportSettings.includeNames) header.push("employee_name");
+      if (exportSettings.includeEmails) header.push("employee_email");
+      if (exportSettings.includeDepartments) header.push("department");
+      header.push("work_date", "type", "hours");
 
-      // lisää myös puuttuvat (tyhjät) rivit jos haluat: MVP ei lisää
+      // Nopeaan lookupiin
+      const shiftMap = new Map<string, ShiftRow>(); // empId|date -> shift
+      shifts.forEach((s) => shiftMap.set(`${s.employee_id}|${s.work_date}`, s));
 
-      const csv = [header, ...rows]
+      // Apuri: muodosta yksi rivi
+      const makeRow = (emp: EmpRow, date: string, s?: ShiftRow): (string | number)[] => {
+        const row: (string | number)[] = [];
+        if (exportSettings.includeNames) row.push(emp?.name ?? "");
+        if (exportSettings.includeEmails) row.push(emp?.email ?? "");
+        if (exportSettings.includeDepartments) row.push(emp?.department ?? "");
+        row.push(date, s?.type ?? "", s?.hours ?? 0);
+        return row;
+      };
+
+      // Rivit: includeEmptyShifts = jokaisesta päivästä rivi, muuten vain olemassa olevat
+      const rows: (string | number)[][] = [];
+      if (exportSettings.includeEmptyShifts) {
+        for (const emp of employees) {
+          for (const d of range) {
+            rows.push(makeRow(emp, d, shiftMap.get(`${emp.id}|${d}`)));
+          }
+        }
+      } else {
+        shifts
+          .sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
+          .forEach((s) => rows.push(makeRow(byId.get(s.employee_id)!, s.work_date, s)));
+      }
+
+      let csv = [header, ...rows]
         .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
         .join("\n");
+
+        // Lisätty: tuntisummat loppuun, jos asetus päällä
+      if (exportSettings.includeHourTotals) {
+        const totals = new Map<string, number>(); // empId -> total hours
+        for (const emp of employees) totals.set(emp.id, 0);
+        for (const s of shifts) totals.set(s.employee_id, (totals.get(s.employee_id) ?? 0) + (s.hours ?? 0));
+        const totalsRows = Array.from(totals.entries()).map(([empId, sum]) => {
+          const emp = byId.get(empId)!;
+          // label: nimi > email > id
+          const label =
+            exportSettings.includeNames ? emp.name :
+            exportSettings.includeEmails ? emp.email : emp.id;
+          return [label, String(sum)];
+        });
+        const totalsCsv =
+          "\n\n" +
+          ["employee", "total_hours"].join(",") +
+          "\n" +
+          totalsRows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+        csv += totalsCsv;
+      }
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `vuorot_${range[0]}_${range[range.length - 1]}.csv`;
+        // Tiedostonimeen yrityksen nimi
+      const company = (exportSettings.companyName || "vuorot")
+        .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+        .replace(/_{2,}/g, "_")
+        .replace(/^_|_$/g, "");
+      a.download = `${company}_${range[0]}_${range[range.length - 1]}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("CSV ladattu");
@@ -590,9 +634,7 @@ function PeriodSelector() {
   const days = useScheduleStore((s) => s.days);
   const startISO = useScheduleStore((s) => s.startDateISO);
   const setRange = useScheduleStore((s) => s.setRange);
-  const weekStartDay = useSettingsStore(
-    (s) => s.settings?.general?.weekStartDay ?? "monday"
-  );
+
 
   const current = PERIODS.find((p) => p.value === days) ?? PERIODS[1];
 

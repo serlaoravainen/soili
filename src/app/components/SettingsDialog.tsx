@@ -21,7 +21,7 @@ import {
  import { useSettingsStore } from "@/store/useSettingsStore";
  import { applyTheme } from "@/lib/theme";
 import type {
-  Theme, Language, WeekStartDay, TimeFormat, DateFormat, TimePeriod
+  Theme, Language, WeekStartDay, DateFormat
 } from "@/lib/settingsSchema";
 
 export default function SettingsDialog() {
@@ -166,32 +166,19 @@ export default function SettingsDialog() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label className="text-sm font-medium">Viikon alkupäivä</Label>
-                <Select
-  value={settings.general.weekStartDay}
-  onValueChange={(v: WeekStartDay) => updateGeneralSettings("weekStartDay", v)}
->
-  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-  <SelectContent>
-    <SelectItem value="monday">Maanantai</SelectItem>
-    <SelectItem value="sunday">Sunnuntai</SelectItem>
-  </SelectContent>
-</Select>
-
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Aikamuoto</Label>
                   <Select
-                    value={settings.general.timeFormat}
-                    onValueChange={(v: TimeFormat) => updateGeneralSettings("timeFormat", v)}
+                    value={settings.general.weekStartDay}
+                    onValueChange={(v: WeekStartDay) => updateGeneralSettings("weekStartDay", v)}
                   >
                     <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="24h">24h (15:30)</SelectItem>
-                      <SelectItem value="12h">12h (3:30 PM)</SelectItem>
+                      <SelectItem value="monday">Maanantai</SelectItem>
+                      <SelectItem value="sunday">Sunnuntai</SelectItem>
                     </SelectContent>
                   </Select>
+
                 </div>
+              {/* Coming soon */}
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -209,106 +196,10 @@ export default function SettingsDialog() {
                     </SelectContent>
                   </Select>
                 </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Oletusaikajakso</Label>
-                  <Select
-                    value={String(settings.general.defaultTimePeriod)}
-                    onValueChange={(v) => updateGeneralSettings("defaultTimePeriod", parseInt(v) as unknown as TimePeriod)}
-                  >
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="7">7 päivää</SelectItem>
-                      <SelectItem value="10">10 päivää</SelectItem>
-                      <SelectItem value="14">14 päivää</SelectItem>
-                      <SelectItem value="30">30 päivää</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* Oletusaikajakso poistettu MVP:stä */}
               </div>
 
-              <Separator />
 
-              <div className="space-y-3">
-                <Label className="text-sm font-medium">Työajat</Label>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Alkuaika</Label>
-                    <Input
-                      type="time"
-                      value={settings.general.workingHours.start}
-                      onChange={(e) =>
-                        updateGeneralSettings("workingHours", {
-                          ...settings.general.workingHours,
-                          start: e.target.value,
-                        })
-                      }
-                      className="h-8"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Loppuaika</Label>
-                    <Input
-                      type="time"
-                      value={settings.general.workingHours.end}
-                      onChange={(e) =>
-                        updateGeneralSettings("workingHours", {
-                          ...settings.general.workingHours,
-                          end: e.target.value,
-                        })
-                      }
-                      className="h-8"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">Tauko (min)</Label>
-                    <Input
-                      type="number"
-                      min={0}
-                      max={120}
-                      value={settings.general.workingHours.breakDuration}
-                      onChange={(e) =>
-                        updateGeneralSettings("workingHours", {
-                          ...settings.general.workingHours,
-                          breakDuration: Number(e.target.value) || 0,
-                        })
-                      }
-                      className="h-8"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <Separator />
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label className="text-sm font-medium">Automaattinen tallennus</Label>
-                    <p className="text-xs text-muted-foreground">Tallenna muutokset automaattisesti</p>
-                  </div>
-                  <Switch
-                    checked={settings.general.autoSave}
-                    onCheckedChange={(checked) => updateGeneralSettings("autoSave", checked)}
-                  />
-                </div>
-
-                {settings.general.autoSave && (
-                  <div className="space-y-2">
-                    <Label className="text-xs text-muted-foreground">
-                      Tallennusväli: {settings.general.autoSaveInterval} sekuntia
-                    </Label>
-                    <Slider
-                      value={[settings.general.autoSaveInterval]}
-                      onValueChange={([v]) => updateGeneralSettings("autoSaveInterval", v)}
-                      min={10}
-                      max={300}
-                      step={10}
-                      className="w-full"
-                    />
-                  </div>
-                )}
-              </div>
             </TabsContent>
 
             {/* Auto-gen */}
@@ -349,35 +240,6 @@ export default function SettingsDialog() {
                 </div>
               ))}
 
-              <Separator />
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">
-                    Max peräkkäisiä päiviä: {settings.autoGeneration.maxConsecutiveDays}
-                  </Label>
-                  <Slider
-                    value={[settings.autoGeneration.maxConsecutiveDays]}
-                    onValueChange={([v]) => updateAutoGenerationSettings("maxConsecutiveDays", v)}
-                    min={1}
-                    max={14}
-                    step={1}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">
-                    Min lepotunnit: {settings.autoGeneration.minRestHours}h
-                  </Label>
-                  <Slider
-                    value={[settings.autoGeneration.minRestHours]}
-                    onValueChange={([v]) => updateAutoGenerationSettings("minRestHours", v)}
-                    min={8}
-                    max={24}
-                    step={1}
-                  />
-                </div>
-              </div>
             </TabsContent>
 
             {/* Vienti */}
