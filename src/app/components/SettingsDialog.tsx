@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import { sendEmail } from "@/lib/sendEmail"
 import { toast } from "sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
@@ -26,6 +27,7 @@ import type {
 
 export default function SettingsDialog() {
   const [isOpen, setIsOpen] = useState(false);
+  const [testEmail, setTestEmail] = useState("");
 
   const settings = useSettingsStore((s) => s.settings);
   const updateGeneralSettings = useSettingsStore((s) => s.updateGeneral);
@@ -295,7 +297,49 @@ export default function SettingsDialog() {
                 ))}
               </div>
 
+              <div className="space-y-2">
+  <Label className="text-sm font-medium">Testaa sähköposti</Label>
+  <div className="flex gap-2">
+    <Input
+      type="email"
+      placeholder="vastaanottaja@esimerkki.fi"
+      value={testEmail}
+      onChange={(e) => setTestEmail(e.target.value)}
+      className="h-8"
+    />
+    <Button
+      size="sm"
+      onClick={async () => {
+        const to = testEmail.trim();
+        if (!to) { toast.error("Anna vastaanottajan sähköposti"); return; }
+        try {
+          await sendEmail({
+            to,
+            subject: "Soili – testiviesti",
+            text: "Tämä on Soili-sovelluksen testiviesti. Jos näet tämän, lähetys toimii.",
+          });
+          toast.success("Testiviesti lähetetty");
+        } catch (err: unknown) {
+          console.error(err);
+          const msg =
+            err instanceof Error
+              ? err.message
+              : typeof err === "string"
+              ? err
+              : (() => {
+                  try { return JSON.stringify(err); } catch { return "Tuntematon virhe"; }
+                })();
+          toast.error(`Lähetys epäonnistui: ${msg}`);
+        }
+      }}
+    >
+      Lähetä
+    </Button>
+  </div>
+</div>
               <Separator />
+
+
 
               <div className="space-y-2">
                 <Label className="text-sm font-medium">Ilmoitussisältö</Label>

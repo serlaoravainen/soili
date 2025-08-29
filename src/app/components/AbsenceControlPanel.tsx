@@ -19,10 +19,15 @@ import {
 import { AbsenceRequest } from '../types';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supaBaseClient';
+import { notifyAbsenceDecision } from '@/features/absences/notify';
+import { useSettingsStore } from "@/store/useSettingsStore";
 
 const AbsenceControlPanel = () => {
   const [requests, setRequests] = useState<AbsenceRequest[]>([]);
   const [adminResponse, setAdminResponse] = useState('');
+
+  const emailEnabled =
+  useSettingsStore((s) => s.settings?.notifications?.emailNotifications ?? true);
 
   // --- FETCH FROM SUPABASE ---
   useEffect(() => {
@@ -112,16 +117,21 @@ const handleApprove = async (requestId: string) => {
     toast.error('Hyväksyntä epäonnistui');
     return;
   }
-
-  // Luo ilmoitus
-  if (target) {
-    await supabase.from("notifications").insert({
-      type: "absence_approved",
-      title: "Poissaolo hyväksytty",
-      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
-    });
+  // Lähetä sähköposti + loki notify.ts:n kautta (ei kaadeta hyväksyntää, jos maili epäonnistuu)
+  if (emailEnabled && target) {
+    try {
+      await notifyAbsenceDecision({
+        employeeId: target.employeeId,
+        status: "approved",
+        startDate: target.startDate,
+        endDate: target.endDate || null,
+        adminMessage: adminResponse?.trim() || undefined,
+      });
+    } catch (e) {
+      console.error("[EMAIL APPROVE ERROR]", e);
+      toast.error("Sähköpostin lähetys epäonnistui (hyväksyntä tallessa).");
+    }
   }
-
   toast.success('Poissaolopyyntö hyväksytty');
 };
 
@@ -138,15 +148,20 @@ const handleDecline = async (requestId: string) => {
     return;
   }
 
-  // Luo ilmoitus
-  if (target) {
-    await supabase.from("notifications").insert({
-      type: "absence_declined",
-      title: "Poissaolo hylätty",
-      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
-    });
+  if (emailEnabled && target) {
+    try {
+      await notifyAbsenceDecision({
+        employeeId: target.employeeId,
+        status: "declined",
+        startDate: target.startDate,
+        endDate: target.endDate || null,
+        adminMessage: adminResponse?.trim() || undefined,
+      });
+    } catch (e) {
+      console.error("[EMAIL DECLINE ERROR]", e);
+      toast.error("Sähköpostin lähetys epäonnistui (hylkäys tallessa).");
+    }
   }
-
   toast.success('Poissaolopyyntö hylätty');
 };
 
