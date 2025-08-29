@@ -146,7 +146,64 @@ export const useSettingsStore = create<State>()(
 
     })),
     {
-      name: "soili-settings-v1",
+      name: "soili-settings-v2",
+          version: 2,
+migrate: (persisted: unknown): State => {
+  try {
+    // jos dataa ei ole → palauta default state
+    if (!persisted || typeof persisted !== "object") {
+      return { settings: DEFAULT_SETTINGS, hasHydrated: false, _setHydrated: () => {}, setAll: () => {}, reset: () => {}, updateGeneral: () => {}, updateAutoGen: () => {}, updateExport: () => {}, updateNotifications: () => {}, updateSystem: () => {}, importFromJson: () => ({ ok: false, error: "not implemented" }), exportToFile: () => {} } as State;
+    }
+
+    const st = persisted as State;
+    if (!st?.settings) {
+      return { ...st, settings: DEFAULT_SETTINGS };
+    }
+
+    const prevNotifs: Partial<Settings["notifications"]> | undefined =
+      st.settings.notifications;
+
+    const nextNotifs: Settings["notifications"] = {
+      ...prevNotifs,
+      notifyAdminOnNewAbsence:
+        prevNotifs?.notifyAdminOnNewAbsence ?? true,
+      adminNotificationEmails: Array.isArray(
+        prevNotifs?.adminNotificationEmails
+      )
+        ? prevNotifs!.adminNotificationEmails!
+        : [],
+      emailNotifications:
+        prevNotifs?.emailNotifications ?? DEFAULT_SETTINGS.notifications.emailNotifications,
+      pushNotifications:
+        prevNotifs?.pushNotifications ?? DEFAULT_SETTINGS.notifications.pushNotifications,
+      absenceRequests:
+        prevNotifs?.absenceRequests ?? DEFAULT_SETTINGS.notifications.absenceRequests,
+      scheduleChanges:
+        prevNotifs?.scheduleChanges ?? DEFAULT_SETTINGS.notifications.scheduleChanges,
+      employeeUpdates:
+        prevNotifs?.employeeUpdates ?? DEFAULT_SETTINGS.notifications.employeeUpdates,
+      systemUpdates:
+        prevNotifs?.systemUpdates ?? DEFAULT_SETTINGS.notifications.systemUpdates,
+      dailyDigest:
+        prevNotifs?.dailyDigest ?? DEFAULT_SETTINGS.notifications.dailyDigest,
+      digestTime:
+        prevNotifs?.digestTime ?? DEFAULT_SETTINGS.notifications.digestTime,
+    };
+
+    return {
+      ...st,
+      settings: {
+        ...st.settings,
+        notifications: nextNotifs,
+      },
+    };
+  } catch {
+    // fallback jos jotain hajoaa → default state
+    return { settings: DEFAULT_SETTINGS } as State;
+  }
+},
+
+
       onRehydrateStorage: () => (_state, error) => {
         if (error) {
           console.error("settings-store rehydrate failed", error);

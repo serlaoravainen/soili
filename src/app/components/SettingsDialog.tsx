@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
  import { useSettingsStore } from "@/store/useSettingsStore";
+ import { saveNotificationSettingsToDb } from "@/lib/settingsDb";
  import { applyTheme } from "@/lib/theme";
 import type {
   Theme, Language, WeekStartDay, DateFormat
@@ -339,6 +340,48 @@ export default function SettingsDialog() {
 </div>
               <Separator />
 
+  {/* --- Admin-ilmoitukset: uusi lohko --- */}
+  <div className="space-y-3">
+    <div className="flex items-center justify-between">
+      <div>
+        <Label className="text-sm font-medium">
+          Ilmoita adminille uusista poissaolopyynnöistä
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          Lähetä sähköposti, kun työntekijä jättää poissaolopyynnön.
+        </p>
+      </div>
+      <Switch
+        checked={settings.notifications.notifyAdminOnNewAbsence}
+        onCheckedChange={(c) => updateNotificationSettings("notifyAdminOnNewAbsence", c)}
+      />
+    </div>
+
+    <div className="space-y-2">
+      <Label className="text-sm font-medium">Admin-sähköpostit</Label>
+      <Input
+        placeholder="esim. admin@firma.fi, toinen@firma.fi"
+        value={(settings.notifications.adminNotificationEmails ?? []).join(", ")}
+        onChange={(e) => {
+          const emails = e.currentTarget.value
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          updateNotificationSettings("adminNotificationEmails", emails);
+        }}
+        className="h-8"
+      />
+      {(!settings.notifications.adminNotificationEmails ||
+        settings.notifications.adminNotificationEmails.length === 0) && (
+        <p className="text-xs text-amber-600">
+          Vinkki: lisää vähintään yksi osoite, muuten ilmoitusta ei lähetetä.
+        </p>
+      )}
+    </div>
+  </div>
+
+  <Separator />
+
 
 
               <div className="space-y-2">
@@ -465,15 +508,33 @@ export default function SettingsDialog() {
           </Tabs>
         </ScrollArea>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-border">
-          <div className="flex justify-between items-center">
-            <p className="text-xs text-muted-foreground">Asetukset tallennetaan automaattisesti</p>
-            <Button size="sm" onClick={() => { setIsOpen(false); toast.success("Asetukset tallennettu"); }}>
-              Valmis
-            </Button>
-          </div>
-        </div>
+{/* Footer */}
+<div className="p-4 border-t border-border">
+  <div className="flex justify-between items-center">
+    <p className="text-xs text-muted-foreground">
+      Asetukset tallennetaan automaattisesti
+    </p>
+    <Button
+      size="sm"
+      onClick={async () => {
+        try {
+          await saveNotificationSettingsToDb(
+            useSettingsStore.getState().settings.notifications
+          );
+          toast.success("Asetukset tallennettu");
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error("[app_settings upsert failed]", msg);
+          toast.error(`Asetusten tallennus DB:hen epäonnistui: ${msg}`);
+        } finally {
+          setIsOpen(false);
+        }
+      }}
+    >
+      Valmis
+    </Button>
+  </div>
+</div>
       </PopoverContent>
     </Popover>
   );
