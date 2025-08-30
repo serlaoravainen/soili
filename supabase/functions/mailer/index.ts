@@ -71,23 +71,28 @@ async function sendEmail(to: string[], subject: string, text: string) {
 
 // ---- Load settings (DB is source of truth) ----
 async function loadSettings(): Promise<AppSettingsRow> {
-  const { data, error } = await sb.from("app_settings").select("*").eq("id", 1).maybeSingle();
+    const { data, error } = await sb
+    .from("app_settings")
+    .select("email_notifications, admin_notification_emails, absence_requests, schedule_changes, employee_updates, system_updates, daily_digest, digest_time")
+    .eq("id", 1)
+    .maybeSingle();
   if (error) throw error;
-  return (
-    data ?? {
-      id: 1,
-      email_notifications: true,
-      notify_admin_on_new_absence: true,
-      admin_notification_emails: [],
-      updated_at: new Date().toISOString(),
-    }
-  );
+  return data ?? {
+    email_notifications: true,
+    admin_notification_emails: [],
+    absence_requests: true,
+    schedule_changes: true,
+    employee_updates: false,
+    system_updates: false,
+    daily_digest: false,
+    digest_time: "08:00",
+  };
 }
 
 // ---- Process one job ----
 async function processAdminNewAbsence(job: MailJob, settings: AppSettingsRow) {
   if (!settings.email_notifications) return "skipped: email_notifications=false";
-  if (!settings.notify_admin_on_new_absence) return "skipped: notify_admin_on_new_absence=false";
+  if (!settings.absence_requests) return "skipped: absence_requests=false";
   const recipients = settings.admin_notification_emails ?? [];
   if (!Array.isArray(recipients) || recipients.length === 0) return "skipped: no recipients";
 

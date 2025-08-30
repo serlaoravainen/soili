@@ -165,8 +165,6 @@ migrate: (persisted: unknown): State => {
 
     const nextNotifs: Settings["notifications"] = {
       ...prevNotifs,
-      notifyAdminOnNewAbsence:
-        prevNotifs?.notifyAdminOnNewAbsence ?? true,
       adminNotificationEmails: Array.isArray(
         prevNotifs?.adminNotificationEmails
       )
@@ -174,8 +172,6 @@ migrate: (persisted: unknown): State => {
         : [],
       emailNotifications:
         prevNotifs?.emailNotifications ?? DEFAULT_SETTINGS.notifications.emailNotifications,
-      pushNotifications:
-        prevNotifs?.pushNotifications ?? DEFAULT_SETTINGS.notifications.pushNotifications,
       absenceRequests:
         prevNotifs?.absenceRequests ?? DEFAULT_SETTINGS.notifications.absenceRequests,
       scheduleChanges:

@@ -2,7 +2,6 @@
 "use client";
 
 import { useState } from "react";
-import { sendEmail } from "@/lib/sendEmail"
 import { toast } from "sonner";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
@@ -28,7 +27,6 @@ import type {
 
 export default function SettingsDialog() {
   const [isOpen, setIsOpen] = useState(false);
-  const [testEmail, setTestEmail] = useState("");
 
   const settings = useSettingsStore((s) => s.settings);
   const updateGeneralSettings = useSettingsStore((s) => s.updateGeneral);
@@ -282,105 +280,37 @@ export default function SettingsDialog() {
 
             {/* Ilmoitukset */}
             <TabsContent value="notifications" className="p-4 space-y-4">
-              <div className="space-y-2">
-                <Label className="text-sm font-medium">Ilmoitustyypit</Label>
-                {([
-                  ["Sähköposti-ilmoitukset", "emailNotifications"],
-                  ["Push-ilmoitukset", "pushNotifications"],
-                ] as const).map(([label, key]) => (
-                  <div className="flex items-center justify-between" key={key}>
-                    <Label className="text-sm">{label}</Label>
-                    <Switch
-                      checked={settings.notifications[key]}
-                      onCheckedChange={(c) => updateNotificationSettings(key, c)}
-                    />
-                  </div>
-                ))}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Sähköposti-ilmoitukset</Label>
+                  <Switch
+                    checked={settings.notifications.emailNotifications}
+                    onCheckedChange={(c) => updateNotificationSettings("emailNotifications", c)}
+                  />
+                </div>
+                <div className="space-y-2 pl-1">
+                  <Label className="text-sm font-medium">Admin-sähköpostit</Label>
+                  <Input
+                    placeholder="esim. admin@firma.fi, toinen@firma.fi"
+                    value={(settings.notifications.adminNotificationEmails ?? []).join(", ")}
+                    onChange={(e) => {
+                      const emails = e.currentTarget.value
+                        .split(",")
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+                      updateNotificationSettings("adminNotificationEmails", emails);
+                    }}
+                    className="h-8"
+                  />
+                  {(!settings.notifications.adminNotificationEmails ||
+                    settings.notifications.adminNotificationEmails.length === 0) && (
+                    <p className="text-xs text-amber-600">
+                      Vinkki: lisää vähintään yksi osoite, muuten ilmoitusta ei lähetetä.
+                    </p>
+                  )}
+                </div>
               </div>
-
-              <div className="space-y-2">
-  <Label className="text-sm font-medium">Testaa sähköposti</Label>
-  <div className="flex gap-2">
-    <Input
-      type="email"
-      placeholder="vastaanottaja@esimerkki.fi"
-      value={testEmail}
-      onChange={(e) => setTestEmail(e.target.value)}
-      className="h-8"
-    />
-    <Button
-      size="sm"
-      onClick={async () => {
-        const to = testEmail.trim();
-        if (!to) { toast.error("Anna vastaanottajan sähköposti"); return; }
-        try {
-          await sendEmail({
-            to,
-            subject: "Soili – testiviesti",
-            text: "Tämä on Soili-sovelluksen testiviesti. Jos näet tämän, lähetys toimii.",
-          });
-          toast.success("Testiviesti lähetetty");
-        } catch (err: unknown) {
-          console.error(err);
-          const msg =
-            err instanceof Error
-              ? err.message
-              : typeof err === "string"
-              ? err
-              : (() => {
-                  try { return JSON.stringify(err); } catch { return "Tuntematon virhe"; }
-                })();
-          toast.error(`Lähetys epäonnistui: ${msg}`);
-        }
-      }}
-    >
-      Lähetä
-    </Button>
-  </div>
-</div>
               <Separator />
-
-  {/* --- Admin-ilmoitukset: uusi lohko --- */}
-  <div className="space-y-3">
-    <div className="flex items-center justify-between">
-      <div>
-        <Label className="text-sm font-medium">
-          Ilmoita adminille uusista poissaolopyynnöistä
-        </Label>
-        <p className="text-xs text-muted-foreground">
-          Lähetä sähköposti, kun työntekijä jättää poissaolopyynnön.
-        </p>
-      </div>
-      <Switch
-        checked={settings.notifications.notifyAdminOnNewAbsence}
-        onCheckedChange={(c) => updateNotificationSettings("notifyAdminOnNewAbsence", c)}
-      />
-    </div>
-
-    <div className="space-y-2">
-      <Label className="text-sm font-medium">Admin-sähköpostit</Label>
-      <Input
-        placeholder="esim. admin@firma.fi, toinen@firma.fi"
-        value={(settings.notifications.adminNotificationEmails ?? []).join(", ")}
-        onChange={(e) => {
-          const emails = e.currentTarget.value
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          updateNotificationSettings("adminNotificationEmails", emails);
-        }}
-        className="h-8"
-      />
-      {(!settings.notifications.adminNotificationEmails ||
-        settings.notifications.adminNotificationEmails.length === 0) && (
-        <p className="text-xs text-amber-600">
-          Vinkki: lisää vähintään yksi osoite, muuten ilmoitusta ei lähetetä.
-        </p>
-      )}
-    </div>
-  </div>
-
-  <Separator />
 
 
 

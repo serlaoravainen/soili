@@ -56,10 +56,8 @@ export const ExportSettingsSchema = z.object({
 
 export const NotificationSettingsSchema = z.object({
   emailNotifications: z.boolean(),
-  pushNotifications: z.boolean(),
-  absenceRequests: z.boolean(),
-  notifyAdminOnNewAbsence: z.boolean(),
   adminNotificationEmails: z.array(z.string().email()).max(50).default([]),
+  absenceRequests: z.boolean(),
   scheduleChanges: z.boolean(),
   employeeUpdates: z.boolean(),
   systemUpdates: z.boolean(),
@@ -119,9 +117,7 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   notifications: {
     emailNotifications: true,
-    pushNotifications: false,
     absenceRequests: true,
-    notifyAdminOnNewAbsence: true,
     adminNotificationEmails: [],
     scheduleChanges: true,
     employeeUpdates: false,

@@ -5,6 +5,75 @@ import { useSettingsStore } from "@/store/useSettingsStore";
 
 export type AbsenceDecision = "approved" | "declined";
 
+// --- Edge Functions: resolver + mailer trigger ---
+function resolveFunctionsBase(): string {
+  const direct = process.env.NEXT_PUBLIC_SUPABASE_FUNCTIONS_URL?.trim();
+  if (direct) return direct.replace(/\/+$/, "");
+  const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  if (!supaUrl) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL");
+  if (supaUrl.includes("localhost") || supaUrl.includes("127.0.0.1")) {
+    if (typeof window !== "undefined") {
+      const h = window.location.hostname;
+      if (h && h !== "localhost" && h !== "127.0.0.1") {
+        return `http://${h}:54321/functions/v1`;
+      }
+    }
+    return "http://127.0.0.1:54321/functions/v1";
+  }
+  return supaUrl.replace(".supabase.co", ".functions.supabase.co");
+}
+
+async function triggerMailerNow() {
+  try {
+    const url = `${resolveFunctionsBase()}/mailer`;
+    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    await fetch(url, {
+      method: "POST",
+      headers: anon ? { Authorization: `Bearer ${anon}` } : {},
+      // ettei blokkaa navigaatiota tms.
+      keepalive: true,
+    });
+  } catch {
+    // ei saa kaataa virtaan; cron poimii sitten
+  }
+}
+
+// --- Admin-uutisointi: jonota + laukaise heti ---
+type AdminNewAbsenceJobPayload = {
+  employee_id: string;
+  start_date: string;
+  end_date?: string | null;
+  reason?: string | null;
+};
+
+/**
+ * Kutsu TÄTÄ heti sen jälkeen kun poissaolopyyntö on luotu kantaan.
+ * Esim. submit-handlerissa insertin onnistumisen jälkeen.
+ */
+export async function enqueueAdminNewAbsence(payload: AdminNewAbsenceJobPayload) {
+  // varmistetaan, että sähköpostit on päällä ja admin-lista ei ole tyhjä
+  const settings = useSettingsStore.getState().settings;
+  const n = settings.notifications;
+  if (!n.emailNotifications || !n.absenceRequests || (n.adminNotificationEmails ?? []).length === 0) {
+    return; // ei lähetetä mitään
+  }
+
+  // työnnetään jonoihin
+  const { error } = await supabase.from("mail_jobs").insert({
+    type: "admin_new_absence",
+    status: "queued",
+    attempt_count: 0,
+    payload, // { employee_id, start_date, end_date?, reason? }
+  });
+  if (error) {
+    console.warn("[enqueueAdminNewAbsence] insert failed", error);
+    return;
+  }
+  // laukaise mailer heti (fire-and-forget)
+  triggerMailerNow().catch(() => {});
+}
+
+
 export async function notifyAbsenceDecision(args: {
   employeeId: string;
   status: AbsenceDecision;
