@@ -5,16 +5,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-type MailJob = {
+// --- Types ---
+type JobType = "admin_new_absence" | "employee_shift_changed" | "employee_new_shift" | "employee_shift_deleted" | string;
+type ExtendedJobType = JobType | "employee_new_shift";
+
+type BaseJob = {
   id: number;
-  type: string;
-  payload: {
-    absence_id: string;
-    employee_id: string;
-    start_date: string;
-    end_date?: string | null;
-    reason?: string | null;
-  };
+  type: ExtendedJobType;
+  payload: Record<string, unknown>;
   status: "queued" | "sent" | "failed" | string;
   attempt_count: number;
   last_error?: string | null;
@@ -22,12 +20,26 @@ type MailJob = {
   processed_at?: string | null;
 };
 
+
+type EmployeeShiftChangedPayload = {
+  shift_id: string;
+  employee_id: string;
+  work_date: string;
+  old_start?: string | null;
+  old_end?: string | null;
+  new_start?: string | null;
+  new_end?: string | null;
+};
+
 type AppSettingsRow = {
-  id: 1;
   email_notifications: boolean;
-  notify_admin_on_new_absence: boolean;
   admin_notification_emails: string[];
-  updated_at: string;
+  absence_requests: boolean;
+  schedule_changes: boolean;
+  employee_updates: boolean;
+  system_updates: boolean;
+  daily_digest: boolean;
+  digest_time: string;
 };
 
 // ---- ENV ----
@@ -48,7 +60,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 // ---- Resend sender ----
-async function sendEmail(to: string[], subject: string, text: string) {
+async function sendEmail(to: string[] | string, subject: string, text: string) {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -69,9 +81,88 @@ async function sendEmail(to: string[], subject: string, text: string) {
   }
 }
 
+// ---- New: employee new shift ----
+async function processEmployeeNewShift(job: BaseJob, settings: AppSettingsRow) {
+  if (!settings.email_notifications) return "skipped: email_notifications=false";
+  if (!settings.schedule_changes)    return "skipped: schedule_changes=false";
+
+  const p = job.payload;
+  const empId = String(p.employee_id ?? "");
+  if (!empId) return "skipped: no employee_id";
+
+  const { data: emp, error: empErr } = await sb
+    .from("employees")
+    .select("email,name")
+    .eq("id", empId)
+    .maybeSingle();
+  if (empErr) throw empErr;
+  const to = emp?.email;
+  if (!to) return "skipped: employee has no email";
+
+  const date = String(p.work_date ?? "");
+  const s = p.start ? String(p.start) : "";
+  const e = p.end   ? String(p.end)   : "";
+
+  const subject = `Sinulle on lisätty uusi työvuoro (${date})`;
+  const lines = [
+    emp?.name ? `Hei ${emp.name},` : "Hei,",
+    "",
+    "Sinulle on lisätty uusi työvuoro:",
+    `Aika: ${s}${e ? ` – ${e}` : ""}`,
+    date ? `Päivä: ${date}` : null,
+    "",
+    "Terveisin,",
+    "Soili",
+  ].filter(Boolean).join("\n");
+
+  await sendEmail([to], subject, lines);
+  return "sent";
+}
+
+// ---- New: employee shift deleted ----
+async function processEmployeeShiftDeleted(job: BaseJob, settings: AppSettingsRow) {
+  if (!settings.email_notifications) return "skipped: email_notifications=false";
+  if (!settings.schedule_changes)    return "skipped: schedule_changes=false";
+
+  const p = job.payload;
+  const empId = String(p.employee_id ?? "");
+  if (!empId) return "skipped: no employee_id";
+
+  const { data: emp, error: empErr } = await sb
+    .from("employees")
+    .select("email,name")
+    .eq("id", empId)
+    .maybeSingle();
+  if (empErr) throw empErr;
+  const to = emp?.email;
+  if (!to) return "skipped: employee has no email";
+
+  const date = String(p.work_date ?? "");
+  const s = p.start ? String(p.start) : "";
+  const e = p.end   ? String(p.end)   : "";
+
+  const subject = `Vuorosi on peruttu (${date})`;
+  const lines = [
+    emp?.name ? `Hei ${emp.name},` : "Hei,",
+    "",
+    "Sinulle merkitty työvuoro on poistettu.",
+    (s || e) ? `Aika: ${s}${e ? ` – ${e}` : ""}` : null,
+    date ? `Päivä: ${date}` : null,
+    "",
+    "Jos tämä on virhe, ole yhteydessä esihenkilöösi.",
+    "",
+    "Terveisin,",
+    "Soili",
+  ].filter(Boolean).join("\n");
+
+  await sendEmail([to], subject, lines);
+  return "sent";
+}
+
+
 // ---- Load settings (DB is source of truth) ----
 async function loadSettings(): Promise<AppSettingsRow> {
-    const { data, error } = await sb
+  const { data, error } = await sb
     .from("app_settings")
     .select("email_notifications, admin_notification_emails, absence_requests, schedule_changes, employee_updates, system_updates, daily_digest, digest_time")
     .eq("id", 1)
@@ -90,7 +181,7 @@ async function loadSettings(): Promise<AppSettingsRow> {
 }
 
 // ---- Process one job ----
-async function processAdminNewAbsence(job: MailJob, settings: AppSettingsRow) {
+async function processAdminNewAbsence(job: BaseJob, settings: AppSettingsRow) {
   if (!settings.email_notifications) return "skipped: email_notifications=false";
   if (!settings.absence_requests) return "skipped: absence_requests=false";
   const recipients = settings.admin_notification_emails ?? [];
@@ -100,20 +191,20 @@ async function processAdminNewAbsence(job: MailJob, settings: AppSettingsRow) {
   const { data: emp, error: empErr } = await sb
     .from("employees")
     .select("name")
-    .eq("id", job.payload.employee_id)
+    .eq("id", String(job.payload.employee_id))
     .maybeSingle();
 
   if (empErr) throw empErr;
 
   const employeeName = emp?.name ?? "Tuntematon";
-  const s = job.payload.start_date;
-  const e = job.payload.end_date ?? job.payload.start_date;
+  const s = String(job.payload.start_date);
+  const e = (job.payload.end_date ?? job.payload.start_date) as string;
 
   const subject = `Uusi poissaolopyyntö: ${employeeName} (${s}${e !== s ? `–${e}` : ""})`;
   const lines = [
     `Työntekijä: ${employeeName}`,
     `Ajankohta: ${s}${e !== s ? ` – ${e}` : ""}`,
-    job.payload.reason ? `Syy: ${job.payload.reason}` : null,
+    job.payload.reason ? `Syy: ${String(job.payload.reason)}` : null,
     // Voit halutessa lisätä dashboard-linkin .env:iin, esim. DASHBOARD_URL
     Deno.env.get("DASHBOARD_URL") ? `Avaa hallinta: ${Deno.env.get("DASHBOARD_URL")}` : null,
   ].filter(Boolean);
@@ -122,6 +213,50 @@ async function processAdminNewAbsence(job: MailJob, settings: AppSettingsRow) {
   await sendEmail(recipients, subject, text);
   return "sent";
 }
+
+// ---- New: employee shift changed ----
+async function processEmployeeShiftChanged(job: BaseJob, settings: AppSettingsRow) {
+  if (!settings.email_notifications) return "skipped: email_notifications=false";
+  if (!settings.schedule_changes)    return "skipped: schedule_changes=false";
+
+  const p = job.payload as EmployeeShiftChangedPayload;
+  const empId = String(p.employee_id ?? "");
+  if (!empId) return "skipped: no employee_id";
+
+  const { data: emp, error: empErr } = await sb
+    .from("employees")
+    .select("email,name")
+    .eq("id", empId)
+    .maybeSingle();
+  if (empErr) throw empErr;
+  const to = emp?.email;
+  if (!to) return "skipped: employee has no email";
+
+  const date = String(p.work_date ?? "");
+  const oldS = p.old_start ? String(p.old_start) : "";
+  const oldE = p.old_end   ? String(p.old_end)   : "";
+  const newS = p.new_start ? String(p.new_start) : "";
+  const newE = p.new_end   ? String(p.new_end)   : "";
+
+  const subject = `Työvuorosi on muuttunut (${date})`;
+  const lines = [
+    emp?.name ? `Hei ${emp.name},` : "Hei,",
+    "",
+    "Työvuoriasi on päivitetty:",
+    (oldS || oldE) ? `Aiemmin: ${oldS} – ${oldE}` : null,
+    `Uusi:    ${newS} – ${newE}`,
+    date ? `Päivä:   ${date}` : null,
+    "",
+    "Jos tämä ei käy, ole yhteydessä esihenkilöön.",
+    "",
+    "Terveisin,",
+    "Soili",
+  ].filter(Boolean).join("\n");
+
+  await sendEmail([to], subject, lines);
+  return "sent";
+}
+
 
 // ---- Main queue loop ----
 async function processQueue(limit = 25) {
@@ -140,11 +275,17 @@ async function processQueue(limit = 25) {
   let success = 0;
   let failed = 0;
 
-  for (const job of jobs as MailJob[]) {
+  for (const job of jobs as BaseJob[]) {
     try {
       let outcome = "skipped";
       if (job.type === "admin_new_absence") {
         outcome = await processAdminNewAbsence(job, settings);
+        } else if (job.type === "employee_shift_changed") {
+        outcome = await processEmployeeShiftChanged(job, settings);
+        } else if (job.type === "employee_new_shift") {
+        outcome = await processEmployeeNewShift(job, settings);
+        } else if (job.type === "employee_shift_deleted") {
+        outcome = await processEmployeeShiftDeleted(job, settings);
       } else {
         outcome = `skipped: unknown type ${job.type}`;
       }
