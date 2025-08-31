@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
+import { addDaysLocalISO } from "@/lib/dateUtils";
 
 
 // ——— Valikoiva, tyypitetty poiminta hashydrate-funktiolle ilman anyä ———
@@ -39,12 +40,6 @@ const selectHashydrate = <T extends object>(s: T): HashydrateFn =>
   (s as unknown as { hashydrate?: () => void }).hashydrate;
 
 
-// pvm apurit
-function addDaysISO(iso: string, add: number) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + add);
-  return d.toISOString().slice(0, 10);
-}
 
 
 function formatTime(d = new Date()) {
@@ -91,6 +86,8 @@ const Toolbar = () => {
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
 
+
+   const defaultHours = useSettingsStore((s) => s.settings.autoGeneration.defaultHours);
    const hashydrateSettings = useSettingsStore(selectHashydrate);
    const hashydrateSchedule = useScheduleStore(selectHashydrate);
 
@@ -108,7 +105,10 @@ const Toolbar = () => {
 
 
 
-  const range = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)), [START_ISO, DAYS]);
+  const range = useMemo(
+  () => Array.from({ length: DAYS }, (_, i) => addDaysLocalISO(START_ISO, i)),
+  [START_ISO, DAYS]
+);
 
 
 
@@ -234,7 +234,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
             employee_id: emp.id,
             work_date: d,
             type: "normal",
-            hours: 8,
+            hours: defaultHours,
           });
         }
       }

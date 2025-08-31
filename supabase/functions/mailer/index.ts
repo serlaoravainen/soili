@@ -8,6 +8,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // --- Types ---
 type JobType = "admin_new_absence" | "employee_shift_changed" | "employee_new_shift" | "employee_shift_deleted" | string;
 type ExtendedJobType = JobType | "employee_new_shift";
+type EmployeeJobType = "employee_shift_changed" | "employee_new_shift" | "employee_shift_deleted";
+const EMPLOYEE_JOB_TYPES: EmployeeJobType[] = ["employee_shift_changed","employee_new_shift","employee_shift_deleted"];
+const MAIL_AGG_WINDOW_MIN = parseInt(Deno.env.get("MAIL_AGG_WINDOW_MIN") ?? "10", 10);
 
 type BaseJob = {
   id: number;
@@ -41,6 +44,8 @@ type AppSettingsRow = {
   daily_digest: boolean;
   digest_time: string;
 };
+
+type MailJobRow = BaseJob;
 
 // ---- ENV ----
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -159,6 +164,135 @@ async function processEmployeeShiftDeleted(job: BaseJob, settings: AppSettingsRo
   return "sent";
 }
 
+// =============== BULK MELUNESTO: KOONTI 5–10 MIN IKKUNASSA ===============
+// Perusidea: kun törmätään yhteen employee_* jobiin, kerätään kaikki saman työntekijän
+// queued/tuoreet jobit viimeisten N minuuttien sisällä, merkitään ne 'processing',
+// lähetetään YKSI koontimaili ja merkataan kaikki 'sent'.
+
+function cutoffISO(min: number) {
+  return new Date(Date.now() - min * 60_000).toISOString();
+}
+
+function isEmployeeJob(t: string): t is EmployeeJobType {
+  return (EMPLOYEE_JOB_TYPES as string[]).includes(t);
+}
+
+async function claimViaRpc(employeeId: string, sinceISO: string, limit = 200) {
+  const { data, error } = await sb.rpc("claim_employee_jobs", {
+    p_employee_id: employeeId,
+    p_since: sinceISO,
+    p_types: EMPLOYEE_JOB_TYPES,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  // supabase-js v2 palauttaa data: any[]; tyypitetään kevyesti
+  return (data ?? []) as BaseJob[];
+}
+
+
+function fmtTimeMaybe(s?: string | null) {
+  if (!s) return "";
+  return String(s);
+}
+
+function summarizeEmployeeJobs(jobs: MailJobRow[]) {
+  // Palauttaa rivit ja laskurit
+  const lines: string[] = [];
+  let added = 0, changed = 0, deleted = 0;
+  // Lajittele ajankohdan mukaan display-friendly
+  jobs.sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  for (const j of jobs) {
+    const p = j.payload;
+    const date = String(p["work_date"] ?? "");
+    if (j.type === "employee_new_shift") {
+      added++;
+      const s = fmtTimeMaybe(p["start"] as string | undefined);
+      const e = fmtTimeMaybe(p["end"] as string | undefined);
+      lines.push(`• Uusi vuoro ${date}${s || e ? ` (${s}${e ? `–${e}` : ""})` : ""}`);
+    } else if (j.type === "employee_shift_changed") {
+      changed++;
+      const os = fmtTimeMaybe(p["old_start"] as string | undefined);
+      const oe = fmtTimeMaybe(p["old_end"] as string | undefined);
+      const ns = fmtTimeMaybe(p["new_start"] as string | undefined);
+      const ne = fmtTimeMaybe(p["new_end"] as string | undefined);
+      lines.push(`• Vuoro päivitetty ${date}: ${os || oe ? `${os}–${oe} ⇒ ` : ""}${ns}–${ne}`);
+    } else if (j.type === "employee_shift_deleted") {
+      deleted++;
+      const s = fmtTimeMaybe(p["start"] as string | undefined);
+      const e = fmtTimeMaybe(p["end"] as string | undefined);
+      lines.push(`• Vuoro poistettu ${date}${s || e ? ` (${s}${e ? `–${e}` : ""})` : ""}`);
+    }
+  }
+  return { lines, added, changed, deleted };
+}
+
+type AggregationResult =
+  | { kind: "handled"; claimedIds: number[]; count: number }
+  | { kind: "failed"; claimedIds: number[]; error: string }
+  | { kind: "fallback" };
+
+async function processEmployeeJobsAggregated(anchorJob: BaseJob, settings: AppSettingsRow): Promise<AggregationResult> {
+  if (!settings.email_notifications || !settings.schedule_changes) return "skipped: schedule notifications off";
+  const empId = String(anchorJob.payload["employee_id"] ?? "");
+  if (!empId) return "skipped: no employee_id";
+
+  // Hae vastaanottaja
+  const { data: emp, error: empErr } = await sb
+    .from("employees")
+    .select("email,name")
+    .eq("id", empId)
+    .maybeSingle();
+  if (empErr) throw empErr;
+  const to = emp?.email;
+  if (!to) return "skipped: employee has no email";
+
+  const since = cutoffISO(MAIL_AGG_WINDOW_MIN);
+  const claimed = await claimViaRpc(empId, since);
+  if (!claimed.length) {
+    // Ei mitään koottavaa tämän ankkurin ympärille → anna kutsujan hoitaa fallback
+    return { kind: "fallback" };
+  }
+
+  const { lines, added, changed, deleted } = summarizeEmployeeJobs(claimed);
+  if (lines.length === 0) {
+    await sb.from("mail_jobs")
+      .update({ status: "sent", processed_at: new Date().toISOString(), last_error: null })
+      .in("id", claimed.map(j => j.id));
+    return { kind: "handled", claimedIds: claimed.map(j => j.id), count: 0 };
+  }
+
+  // subject esim: "Työvuoripäivitykset (5 kpl) – <päivämäärä>"
+  const total = added + changed + deleted;
+  const today = new Date().toISOString().slice(0,10);
+  const subject = `Työvuoripäivitykset (${total} kpl) – ${today}`;
+  const greeting = emp?.name ? `Hei ${emp.name},` : "Hei,";
+  const text = [
+    greeting, "", 
+    "Tässä viimeisimmät muutokset työvuoroihisi:", 
+    "", 
+    ...lines, 
+    "", 
+    "Terveisin,", 
+    "Soili"
+  ].join("\n");
+
+  try {
+    await sendEmail([to], subject, text);
+    // Merkkaa kaikki claimed sentiksi
+    await sb.from("mail_jobs")
+      .update({ status: "sent", processed_at: new Date().toISOString(), last_error: null })
+      .in("id", claimed.map(j => j.id));
+    return { kind: "handled", claimedIds: claimed.map(j => j.id), count: total };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await sb.from("mail_jobs")
+      .update({ status: "failed", processed_at: new Date().toISOString(), last_error: msg.slice(0, 500) })
+      .in("id", claimed.map(j => j.id));
+    return { kind: "failed", claimedIds: claimed.map(j => j.id), error: msg };
+  }
+}
+
+
 
 // ---- Load settings (DB is source of truth) ----
 async function loadSettings(): Promise<AppSettingsRow> {
@@ -275,16 +409,36 @@ async function processQueue(limit = 25) {
   let success = 0;
   let failed = 0;
 
+  // Koonti voi “nielaista” monta jobia kerralla. Pidetään kirjaa niistä, ettei
+  // samaa satsiä käsitellä uudestaan saman loopin myöhemmillä iteraatioilla.
+  const skipIds = new Set<number>();
+
   for (const job of jobs as BaseJob[]) {
+    if (skipIds.has(job.id)) continue; // jo käsitelty osana koontia
     try {
       let outcome = "skipped";
       if (job.type === "admin_new_absence") {
         outcome = await processAdminNewAbsence(job, settings);
-        } else if (job.type === "employee_shift_changed") {
+      } else if (isEmployeeJob(job.type)) {
+        // UUSI: koonti viimeisen N minuutin ikkunassa
+        const agg = await processEmployeeJobsAggregated(job, settings);
+        if (agg.kind === "handled") {
+          agg.claimedIds.forEach(id => skipIds.add(id));
+          success++;
+          continue; // koonti hoiti statukset
+        }
+        if (agg.kind === "failed") {
+          agg.claimedIds.forEach(id => skipIds.add(id));
+          failed++;
+          continue; // koonti hoiti statukset failediksi
+        }
+        // agg.kind === "fallback" → käsitellään normaalisti yksittäisenä alla
+      } else if (job.type === "employee_shift_changed") {
+        // (varalle; normaalisti yllä oleva haaraa jo tämän)
         outcome = await processEmployeeShiftChanged(job, settings);
-        } else if (job.type === "employee_new_shift") {
+      } else if (job.type === "employee_new_shift") {
         outcome = await processEmployeeNewShift(job, settings);
-        } else if (job.type === "employee_shift_deleted") {
+      } else if (job.type === "employee_shift_deleted") {
         outcome = await processEmployeeShiftDeleted(job, settings);
       } else {
         outcome = `skipped: unknown type ${job.type}`;

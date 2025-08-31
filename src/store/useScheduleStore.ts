@@ -89,6 +89,15 @@ function keyOf(empId: string, iso: string) {
   return `${empId}|${iso}`;
 }
 
+function todayLocalISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 export const useScheduleStore = create<State>()(
   persist(
   devtools((set, get) => ({
@@ -109,7 +118,7 @@ export const useScheduleStore = create<State>()(
      resetFilters: () =>
        set({ filters: { departments: [], showActive: false, showInactive: false, searchTerm: "" } }),
 
-   startDateISO: new Date().toISOString().slice(0, 10),
+startDateISO: todayLocalISO(),
 days: 10 as State["days"],
 
     hydrate: ({ employees, dates, shifts }) => {
@@ -184,67 +193,72 @@ shiftRange: (deltaDays: number) => {
   set({ startDateISO: d.toISOString().slice(0, 10), days });
 },
 
-    saveAll: async () => {
-      const { pending } = get();
-      const changes = Object.values(pending);
-      if (!changes.length) {
-        toast.info("Ei tallennettavia muutoksia");
-        return;
+saveAll: async () => {
+  const { pending } = get();
+  const changes = Object.values(pending);
+  if (!changes.length) {
+    toast.info("Ei tallennettavia muutoksia");
+    return;
+  }
+
+  const upserts: ShiftRow[] = [];
+  const deletes: { employee_id: string; work_date: string }[] = [];
+
+  for (const c of changes) {
+    if (c.hours <= 0) {
+      deletes.push({ employee_id: c.employee_id, work_date: c.work_date });
+    } else {
+      upserts.push({
+        employee_id: c.employee_id,
+        work_date: c.work_date,
+        type: "normal",
+        hours: c.hours,
+      });
+    }
+  }
+
+  try {
+    // 1) Upsertit ensin (turvallista ja idempotenttia)
+    if (upserts.length) {
+      const { error } = await supabase
+        .from("shifts")
+        .upsert(upserts, { onConflict: "employee_id,work_date" });
+      if (error) throw error;
+    }
+
+    // 2) Poistot **ilman ristiin-IN-bugia**: ryhmittele työntekijöittäin
+    if (deletes.length) {
+      const byEmp = new Map<string, string[]>();
+      for (const d of deletes) {
+        const arr = byEmp.get(d.employee_id) ?? [];
+        arr.push(d.work_date);
+        byEmp.set(d.employee_id, arr);
       }
 
-      const upserts: ShiftRow[] = [];
-      const deletes: { employee_id: string; work_date: string }[] = [];
-
-      for (const c of changes) {
-        if (c.hours <= 0) {
-          deletes.push({ employee_id: c.employee_id, work_date: c.work_date });
-        } else {
-          upserts.push({
-            employee_id: c.employee_id,
-            work_date: c.work_date,
-            type: "normal",
-            hours: c.hours,
-          });
-        }
-      }
-
-      try {
-        // Tee transaktio peräkkäin: ensin upsert, sitten deletet
-        if (upserts.length) {
+      // Chunkkaa päivämääriä per employee_id, jotta IN-listat eivät kasva liikaa
+      for (const [empId, dates] of byEmp.entries()) {
+        const chunkSize = 1000;
+        for (let i = 0; i < dates.length; i += chunkSize) {
+          const sub = dates.slice(i, i + chunkSize);
           const { error } = await supabase
             .from("shifts")
-            .upsert(upserts, { onConflict: "employee_id,work_date" });
+            .delete()
+            .eq("employee_id", empId) // kriittinen: kohdistus yhteen employeeen
+            .in("work_date", sub);    // vain kyseisen employee_id:n päivät
           if (error) throw error;
         }
-
-        if (deletes.length) {
-          // Supabasen "in" yhdistelmäehdolla: suorita chunkkeina
-          const chunkSize = 500;
-          for (let i = 0; i < deletes.length; i += chunkSize) {
-            const chunk = deletes.slice(i, i + chunkSize);
-            const { error } = await supabase
-              .from("shifts")
-              .delete()
-              .in(
-                "employee_id",
-                chunk.map((d) => d.employee_id)
-              )
-              .in(
-                "work_date",
-                chunk.map((d) => d.work_date)
-              );
-            if (error) throw error;
-          }
-        }
-
-        set({ pending: {}, dirty: false });
-        toast.success("Tallennettu");
-      } catch (e) {
-        console.error(e);
-        toast.error("Tallennus epäonnistui");
-        // ÄLÄ nollaa pendingiä epäonnistumisessa
       }
-    },
+    }
+
+    set({ pending: {}, dirty: false });
+    toast.success("Tallennettu");
+  } catch (e) {
+    console.error(e);
+    toast.error("Tallennus epäonnistui");
+    // Älä nollaa pendingiä epäonnistumisessa
+  }
+},
+
 
     undo: () => {
       const { undoStack, shiftsMap, pending, redoStack } = get();
