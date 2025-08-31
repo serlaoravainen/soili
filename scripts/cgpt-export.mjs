@@ -51,7 +51,7 @@ const redactFn = (text, patterns) => {
 
 
 const isProbablyBinary = (buf) => {
-  // yksinkertainen tarkistus: sis+ñlt+ñ+ñk+Â NULL-byttej+ñ
+  // yksinkertainen tarkistus: sisÃ¤ltÃ¤Ã¤kÃ¶ NULL-byttejÃ¤
   const len = Math.min(buf.length, 1024);
   for (let i = 0; i < len; i++) if (buf[i] === 0) return true;
   return false;
@@ -114,4 +114,4 @@ for (const rel of entries) {
 fs.mkdirSync("chatgpt-export", { recursive: true });
 const outPath = "chatgpt-export/code-index.json";
 fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), "utf8");
-console.log(`Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} ÔåÆ ${outPath}`);
+console.log(`Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} â†’ ${outPath}`);
