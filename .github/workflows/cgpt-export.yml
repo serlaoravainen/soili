@@ -1,0 +1,48 @@
+name: Export for ChatGPT
+
+on:
+  workflow_dispatch:
+    inputs:
+      export_repo:
+        description: "Target export repo (owner/name)"
+        required: true
+        default: "serlaoravainen/tuukka-chat-exports"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN_CHATGPT_EXPORT }}  # <-- secret job-tasolla
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install deps
+        run: npm ci || npm i
+
+      - name: Build export JSON
+        run: npm run cgpt:export
+
+      - name: Push to export repo
+        env:
+          SRC_REPO: ${{ github.repository }}
+          SRC_SHA: ${{ github.sha }}
+          EXPORT_REPO: ${{ github.event.inputs.export_repo }}
+        run: |
+          set -e
+          cd chatgpt-export
+          git init
+          git config user.name "cgpt-export-bot"
+          git config user.email "bot@example.com"
+          git add code-index.json
+          git commit -m "export: ${SRC_REPO}@${SRC_SHA}"
+          git branch -M main
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${EXPORT_REPO}.git"
+          git push -f origin main
