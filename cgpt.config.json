@@ -1,0 +1,36 @@
+{
+  "include": ["src/**/*", "app/**/*", "packages/**/*", "scripts/**/*"],
+  "exclude": [
+    "**/node_modules/**",
+    ".next/**",
+    "dist/**",
+    "build/**",
+    "out/**",
+    ".git/**",
+    ".vercel/**",
+    "coverage/**",
+    "**/*.map",
+    "**/*.min.*",
+    "**/*.lock",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.webp",
+    "**/*.svg",
+    "**/*.ico",
+    "**/*.pdf",
+    "**/*.zip",
+    "supabase/.branches/**",
+    "supabase/.temp/**"
+  ],
+"redact": [
+  "(?i)api[_-]?key\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
+  "(?i)(secret|token|password)\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
+  "\\b[A-Za-z0-9_-]{32,}\\b",
+  "(?m)^(RESEND|SUPABASE|VAPID|STRIPE|GOOGLE|AWS|OPENAI)_[A-Z0-9_]+\\s*=\\s*.+$"
+],
+  "maxPreviewBytes": 250000,
+  "chunkBytes": 64000,
+  "maxFileBytes": 1500000
+}
