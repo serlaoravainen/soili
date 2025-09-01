@@ -9,37 +9,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pg_dump
+      - name: Install pg client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
       - name: Dump schema (force IPv4 via PGHOSTADDR + TLS)
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -eo pipefail
           mkdir -p supabase
 
-          # 0) Secret on oltava
+          # 0) Secret-check
           if [ -z "${DB_URL:-}" ]; then
             echo "FATAL: SUPABASE_DB_URL secret puuttuu"; exit 2
           fi
+          echo "Secret OK (maskattu)."
 
-          # 1) Hostname URL:sta (ilman salasanoja tms.)
+          # 1) Ota host talteen URL:sta (ei salasanoja lokiin)
           HOST=$(printf '%s\n' "$DB_URL" | sed -E 's|^[^/]+//[^@/]*@?([^:/?]+).*|\1|')
           if [ -z "$HOST" ]; then
             echo "FATAL: ei saatu hostia SUPABASE_DB_URL:stä"; exit 2
           fi
 
-          # 2) IPv4 lookup ja pakotus PGHOSTADDR:lla
+          # 2) IPv4 pakotus PGHOSTADDR:lla, SNI hostista
           IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
           if [ -z "${IP:-}" ]; then
             echo "FATAL: IPv4 lookup failed for $HOST"; exit 2
           fi
           echo "Using IPv4: $IP"
-          export PGHOSTADDR="$IP"       # -> libpq käyttää tätä, EI IPv6:ta
-          export PGSSLMODE="require"    # varmistetaan TLS
+          export PGHOSTADDR="$IP"
+          export PGSSLMODE="require"
 
-          # 3) SSL varmistus myös URL:ssa (lisää jos puuttuu)
+          # 3) Lisää sslmode=require myös URL:iin jos puuttuu
           URL_TLS="$DB_URL"
           case "$URL_TLS" in
             *sslmode=*) : ;;
@@ -47,7 +48,10 @@ jobs:
             *)    URL_TLS="$URL_TLS?sslmode=require" ;;
           esac
 
-          # 4) Dumpaa skeema ilman system-skeemoja
+          # 4) Savutesti: avaa yhteys (ei tulosta salasanaa)
+          psql -Atqc "select current_user, current_database();" "$URL_TLS"
+
+          # 5) Varsinainen skeemadumppi (system-skeemat pois)
           pg_dump -s -N extensions -N pg_catalog -N information_schema "$URL_TLS" > supabase/schema.sql
 
           echo "---- schema.sql head ----"
