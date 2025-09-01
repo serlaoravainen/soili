@@ -308,6 +308,8 @@ function normalizeNewlines(s) {
 
 // WRITE PER-FILE DUMPS (formatted if cfg.formatDump === true)
 const filesRoot = path.join("chatgpt-export", "files");
+fs.rmSync(filesRoot, { recursive: true, force: true }); // ← PUHDISTA ENNEN KIRJOITUSTA
+fs.mkdirSync(filesRoot, { recursive: true });
 for (const f of manifest.files) {
   const fullTextRaw = (f.chunks || []).map((c) => c.text || "").join("");
   let fullText = fullTextRaw;
