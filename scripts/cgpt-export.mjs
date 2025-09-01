@@ -24,34 +24,42 @@ const detectLang = (rel) => {
   return map[ext] || ext || "text";
 };
 
-// Build a JS RegExp from a pattern that may start with inline flags like (?i)(?m)
-const buildRegex = (raw) => {
-  let pattern = raw;
-  let flags = "g"; // always global replace
-
-  // support a leading group of inline flags like (?im)
-  const m = pattern.match(/^\(\?[im]+\)/);
-  if (m) {
-    if (m[0].includes("i")) flags += "i";
-    if (m[0].includes("m")) flags += "m";
-    pattern = pattern.slice(m[0].length);
+// Build a JS RegExp from a pattern that may start with PCRE-style inline flags, e.g. (?i)(?m)...
+function makeRegex(pattern) {
+  let src = String(pattern);
+  let flags = "g"; // we always want global
+  // Collect inline flags like (?i), (?m), (?im)...
+  // Support one or multiple flag groups at the very start.
+  const inline = src.match(/^(\(\?[a-zA-Z]+\))+?/);
+  if (inline) {
+    // Extract flags from all groups at the start
+    const all = inline[0];
+    const flagSets = [...all.matchAll(/\(\?([a-zA-Z]+)\)/g)].map(m => m[1]);
+    const flat = [...new Set(flagSets.join("").split(""))];
+    if (flat.includes("i")) flags += "i";
+    if (flat.includes("m")) flags += "m";
+    // strip the inline flag groups from the source
+    src = src.slice(all.length);
   }
-
-  return new RegExp(pattern, flags);
-};
+  try {
+    return new RegExp(src, flags);
+  } catch (e) {
+    console.warn(`Redact pattern invalid, skipping: ${pattern} → ${e.message}`);
+    return null;
+  }
+}
 
 const redactFn = (text, patterns) => {
   let out = text;
-  for (const p of patterns || []) {
-    const re = buildRegex(p);
+  for (const p of (patterns || [])) {
+    const re = makeRegex(p);
+    if (!re) continue;
     out = out.replace(re, "[REDACTED]");
   }
   return out;
 };
 
-
 const isProbablyBinary = (buf) => {
-  // yksinkertainen tarkistus: sisältääkö NULL-byttejä
   const len = Math.min(buf.length, 1024);
   for (let i = 0; i < len; i++) if (buf[i] === 0) return true;
   return false;
@@ -78,11 +86,22 @@ const manifest = {
 for (const rel of entries) {
   const abs = path.join(root, rel);
   let buf;
-  try { buf = fs.readFileSync(abs); } catch { manifest.counts.skipped++; continue; }
+  try {
+    buf = fs.readFileSync(abs);
+  } catch {
+    manifest.counts.skipped++;
+    continue;
+  }
 
   const size = buf.length;
-  if (cfg.maxFileBytes && size > cfg.maxFileBytes) { manifest.counts.skipped++; continue; }
-  if (isProbablyBinary(buf)) { manifest.counts.skipped++; continue; }
+  if (cfg.maxFileBytes && size > cfg.maxFileBytes) {
+    manifest.counts.skipped++;
+    continue;
+  }
+  if (isProbablyBinary(buf)) {
+    manifest.counts.skipped++;
+    continue;
+  }
 
   const content = buf.toString("utf8");
   const sha = crypto.createHash("sha256").update(content).digest("hex");
@@ -111,26 +130,28 @@ for (const rel of entries) {
   manifest.counts.bytes += size;
 }
 
+// WRITE JSON
 fs.mkdirSync("chatgpt-export", { recursive: true });
 const outPath = "chatgpt-export/code-index.json";
 fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), "utf8");
-console.log(`Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`);
+console.log(
+  `Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`
+);
 
-// --- UUSI: kirjoita jokainen tiedosto erikseen chatgpt-export/files/** ---
+// WRITE PER-FILE DUMPS (THIS IS WHAT WAS MISSING)
 const filesRoot = path.join("chatgpt-export", "files");
 for (const f of manifest.files) {
-  const fullText = (f.chunks || []).map(c => c.text || "").join("");
-  const dest = path.join(filesRoot, f.path);
+  const fullText = (f.chunks || []).map((c) => c.text || "").join("");
+  const dest = path.join(filesRoot, f.path); // mirrors original path under files/
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, fullText, "utf8");
 }
 console.log(`Also wrote per-file dumps under ${filesRoot}/**`);
 
-// NEW: dumpataan jokainen tiedosto erikseen, jotta se on luettavissa raw.githubusercontent.comin kautta
+// Optional: tiny directory summary
+const byDir = {};
 for (const f of manifest.files) {
-  const fullText = (f.chunks || []).map(c => c.text || "").join("");
-  const destPath = path.join("chatgpt-export", "files", f.path);
-  fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  fs.writeFileSync(destPath, fullText, "utf8");
+  const dir = f.path.split("/").slice(0, 3).join("/"); // e.g., src/app/components
+  byDir[dir] = (byDir[dir] || 0) + 1;
 }
-console.log(`Also wrote per-file dumps under chatgpt-export/files/**`);
+console.log("Collected by dir:", byDir);
