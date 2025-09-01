@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN_CHATGPT_EXPORT }}  # <-- secret job-tasolla
+      SRC_SHA: ${{ github.sha }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -27,15 +28,6 @@ jobs:
       - name: Install deps
         run: npm ci || npm i
 
-      - name: Build export JSON
-        run: npm run cgpt:export
-
-      - name: Show export tree (debug)
-        run: |
-          echo "==== chatgpt-export tree ===="
-          ls -R chatgpt-export || true
-          echo "============================="
-        
       - name: Build export JSON
         run: npm run cgpt:export
 
@@ -63,6 +55,14 @@ jobs:
             echo "ERROR: chatgpt-export/files is empty"
             exit 1
           fi
+      - name: Show export tree (debug)
+        run: |
+          echo "==== chatgpt-export tree ===="
+          ls -la chatgpt-export || true
+          echo ""
+          echo "---- recursive ----"
+          ls -R chatgpt-export || true
+          echo "============================="
 
 
 

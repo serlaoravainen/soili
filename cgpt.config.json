@@ -25,14 +25,14 @@
     "supabase/.temp/**",
     "scripts/**"
   ],
-"redact": [
-  "(?i)api[_-]?key\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
-  "(?i)(secret|token|password)\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
-  "\\b[A-Za-z0-9_-]{32,}\\b",
-  "(?m)^(RESEND|SUPABASE|VAPID|STRIPE|GOOGLE|AWS|OPENAI)_[A-Z0-9_]+\\s*=\\s*.+$"
-],
+  "redact": [
+    "(?i)\\b(api[_-]?key|secret|token|password)\\b\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
+    "(?m)^(RESEND|SUPABASE|VAPID|STRIPE|GOOGLE|AWS|OPENAI)_[A-Z0-9_]+\\s*=\\s*.+$",
+    "\\b[A-Za-z0-9_-]{48,}\\b"
+  ],
   "maxPreviewBytes": 250000,
   "chunkBytes": 64000,
   "maxFileBytes": 1500000,
-  "formatDump": true
+  "formatDump": true,
+  "repoRawBase": "https://raw.githubusercontent.com/<owner>/<repo>/<commit>"
 }

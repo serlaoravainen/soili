@@ -50,7 +50,22 @@ function makeRegex(pattern) {
   }
 }
 
-const redactFn = (text, patterns) => {
+// Redact ilman että rikotaan CSS-muuttujien avaimia tai JS/TS property-keytä vasemmalta puolelta.
+// Strategia: käydään läpi *rivi kerrallaan* ja jos havaitaan CSS-var ( --foo-bar: ... ),
+// redaktoidaan vain kaksoispisteen oikea puoli. Muuten redaktoidaan koko rivi.
+const redactLine = (line, patterns) => {
+  // CSS var -avaimet vasemmalla puolella → redaktoi vain RHS
+  const cssVar = line.match(/^\s*(--[a-z0-9_-]+)\s*:/i);
+  if (cssVar) {
+    const idx = line.indexOf(":");
+    const lhs = line.slice(0, idx + 1);
+    const rhs = line.slice(idx + 1);
+    return lhs + applyRedact(rhs, patterns);
+  }
+  return applyRedact(line, patterns);
+};
+
+const applyRedact = (text, patterns) => {
   let out = text;
   for (const p of (patterns || [])) {
     const re = makeRegex(p);
@@ -58,6 +73,12 @@ const redactFn = (text, patterns) => {
     out = out.replace(re, "[REDACTED]");
   }
   return out;
+};
+
+const redactFn = (text, patterns) => {
+  if (!patterns || patterns.length === 0) return text;
+  // rivi kerrallaan, ettei sotketa vasenta puolta (avaimia)
+  return text.split(/\r?\n/).map((ln) => redactLine(ln, patterns)).join("\n");
 };
 
 const isProbablyBinary = (buf) => {
@@ -81,8 +102,98 @@ const manifest = {
   root: path.basename(root),
   counts: { files: 0, bytes: 0, skipped: 0 },
   config: { ...cfg },
-  files: []
+  files: [],
+  index: { byPath: [], byLang: {} }
 };
+
+// Git-metatiedot
+function getGitSha() {
+  try {
+    return require("child_process").execSync("git rev-parse HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim();
+  } catch { return null; }
+}
+const repoSha = process.env.SRC_SHA || getGitSha();
+
+function getRemoteHttps() {
+  // Yritä GHA envistä ensin
+  const ghRepo = process.env.GITHUB_REPOSITORY;
+  if (ghRepo) return `https://github.com/${ghRepo}`;
+  // Fallback paikalliseen remoteen
+  try {
+    const raw = require("child_process").execSync("git remote get-url origin", { stdio: ["ignore","pipe","ignore"] })
+      .toString().trim();
+    // normalize
+    if (raw.startsWith("git@github.com:")) {
+      return "https://github.com/" + raw.replace("git@github.com:", "").replace(/\.git$/, "");
+    }
+    if (raw.startsWith("https://")) {
+      return raw.replace(/\.git$/, "");
+    }
+  } catch {}
+  return null;
+}
+const remoteHttps = getRemoteHttps();
+
+function makeRawUrl(relPath) {
+  // Jos konfigissa annettu rawBase, käytä sitä. Muuten rakenna GitHubin raw-linkki jos mahdollista.
+  if (cfg.repoRawBase) {
+    return `${cfg.repoRawBase.replace(/\/+$/,"")}/${relPath.replace(/^\/+/,"")}`;
+  }
+  if (remoteHttps && repoSha) {
+    // https://raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>
+    const m = remoteHttps.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/);
+    if (m) {
+      const owner = m[1], repo = m[2];
+      return `https://raw.githubusercontent.com/${owner}/${repo}/${repoSha}/${relPath}`;
+    }
+  }
+  return null;
+}
+
+// Pienapuri: laske rivit ja chunk-metadata
+function splitToChunks(content, step) {
+  const chunks = [];
+  const totalLen = content.length;
+  const totalChunks = Math.ceil(totalLen / step);
+  for (let i = 0; i < totalLen; i += step) {
+    const idx = Math.floor(i / step);
+    const slice = content.slice(i, i + step);
+    // rivit chunkissa (startLine, endLine) lasketaan skannaamalla alusta tähän kohtaan tehokkaasti:
+    // nopea arvio: lasketaan rivit globaaliin taulukkoon vain kerran (kts. buildChunkLineIndex)
+    chunks.push({ i: idx, text: slice, byteOffset: i, totalChunks, hasMore: idx < totalChunks - 1 });
+  }
+  return chunks;
+}
+
+function buildLineIndex(text) {
+  // Palauttaa taulukon rivien aloitusoffseteista (UTF-16 index)
+  const idx = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) idx.push(i + 1); // '\n'
+  }
+  return idx;
+}
+
+function annotateChunkLines(allText, lineIndex, chunk) {
+  // Etsi chunkin alku- ja loppurivi byteOffsetin perusteella
+  // (UTF-16 index, mutta riittää yhtenäiseksi indeksoinniksi UI-käyttöön)
+  const startOff = chunk.byteOffset;
+  const endOff = chunk.byteOffset + chunk.text.length;
+  // binäärihaku rivitaulukkoon
+  const findLine = (off) => {
+    let lo = 0, hi = lineIndex.length - 1, ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (lineIndex[mid] <= off) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans + 1; // rivit 1-indeksoituna
+  };
+  chunk.startLine = findLine(startOff);
+  chunk.endLine = findLine(endOff);
+  return chunk;
+}
+
 
 for (const rel of entries) {
   const abs = path.join(root, rel);
@@ -108,27 +219,48 @@ for (const rel of entries) {
   const sha = crypto.createHash("sha256").update(content).digest("hex");
   const lang = detectLang(rel);
 
-  const chunks = [];
-  if (size <= (cfg.maxPreviewBytes || 250000)) {
-    chunks.push({ i: 0, text: redactFn(content, cfg.redact) });
-  } else {
-    const step = cfg.chunkBytes || 64000;
-    for (let i = 0; i < content.length; i += step) {
-      const slice = content.slice(i, i + step);
-      chunks.push({ i: Math.floor(i / step), text: redactFn(slice, cfg.redact) });
+  const step = cfg.chunkBytes || 64000;
+  const rawChunks = (size <= (cfg.maxPreviewBytes || 250000))
+    ? [{ i: 0, text: content, byteOffset: 0, totalChunks: 1, hasMore: false }]
+    : splitToChunks(content, step);
+
+  // Redaktoi chunkit riviturvallisesti + lisää rivinumerot
+  const lineIndex = buildLineIndex(content);
+  const chunks = rawChunks.map((c) => {
+    const redacted = redactFn(c.text, cfg.redact);
+    const annotated = annotateChunkLines(content, lineIndex, { ...c, text: redacted });
+    if (annotated.hasMore) {
+      annotated.nextOffset = annotated.byteOffset + annotated.text.length;
     }
+    return annotated;
+  });
+
+  // Git modifiedAt (commit time) fallback: fs.stat
+  let modifiedAt = null;
+  try {
+    const cmd = `git log -1 --format=%cI -- "${rel}"`;
+    modifiedAt = require("child_process").execSync(cmd, { stdio: ["ignore","pipe","ignore"] }).toString().trim();
+  } catch {
+    try { modifiedAt = fs.statSync(abs).mtime.toISOString(); } catch {}
   }
 
-  manifest.files.push({
+  const fileEntry = {
     path: rel.replace(/\\/g, "/"),
     size,
     sha256: sha,
     lang,
+    lines: lineIndex.length,          // kokonaisrivimäärä
+    modifiedAt,
+    commitSha: repoSha || null,
+    rawUrl: makeRawUrl(rel.replace(/\\/g, "/")),
     chunks
-  });
+  };
+  manifest.files.push(fileEntry);
 
   manifest.counts.files++;
   manifest.counts.bytes += size;
+  manifest.index.byPath.push(fileEntry.path);
+  (manifest.index.byLang[fileEntry.lang] ||= []).push(fileEntry.path);
 }
 
 // WRITE JSON
@@ -199,7 +331,8 @@ console.log(`Also wrote per-file dumps under ${filesRoot}/**`);
 // Optional: tiny directory summary
 const byDir = {};
 for (const f of manifest.files) {
-  const dir = f.path.split("/").slice(0, 3).join("/"); // e.g., src/app/components
+  const dirFull = require('path').posix.dirname(f.path);     // oikea hakemisto
+  const dir = dirFull.split('/').slice(0, 3).join('/') || '.'; // rajaa 3 tasoon
   byDir[dir] = (byDir[dir] || 0) + 1;
 }
 console.log("Collected by dir:", byDir);
