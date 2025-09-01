@@ -164,7 +164,10 @@ const filesRoot = path.join("chatgpt-export", "files");
 for (const f of manifest.files) {
   const fullTextRaw = (f.chunks || []).map((c) => c.text || "").join("");
   let fullText = fullTextRaw;
-  if (cfg.formatDump === true) {
+  // Prettier kaatuu redaktoituihin kenttiin kuten: process.env.[REDACTED]
+  // Jos sisältö on redaktoitu, skippaa formatointi.
+  const isRedacted = fullTextRaw.includes("[REDACTED]");
+  if (cfg.formatDump === true && !isRedacted) {
     try {
       // prettier.format on asynkroninen → odota
       fullText = await prettier.format(fullTextRaw, {
