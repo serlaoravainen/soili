@@ -3,6 +3,7 @@ import path from "path";
 import crypto from "crypto";
 import fg from "fast-glob";
 import prettier from "prettier";
+import { execSync } from "node:child_process";
 
 const root = process.cwd();
 const cfgPath = path.join(root, "cgpt.config.json");
@@ -109,7 +110,7 @@ const manifest = {
 // Git-metatiedot
 function getGitSha() {
   try {
-    return require("child_process").execSync("git rev-parse HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+    return execSync("git rev-parse HEAD", { stdio: ["ignore", "pipe", "ignore"] })
       .toString().trim();
   } catch { return null; }
 }
@@ -121,7 +122,7 @@ function getRemoteHttps() {
   if (ghRepo) return `https://github.com/${ghRepo}`;
   // Fallback paikalliseen remoteen
   try {
-    const raw = require("child_process").execSync("git remote get-url origin", { stdio: ["ignore","pipe","ignore"] })
+    const raw = execSync("git remote get-url origin", { stdio: ["ignore","pipe","ignore"] })
       .toString().trim();
     // normalize
     if (raw.startsWith("git@github.com:")) {
@@ -239,7 +240,7 @@ for (const rel of entries) {
   let modifiedAt = null;
   try {
     const cmd = `git log -1 --format=%cI -- "${rel}"`;
-    modifiedAt = require("child_process").execSync(cmd, { stdio: ["ignore","pipe","ignore"] }).toString().trim();
+    modifiedAt = execSync(cmd, { stdio: ["ignore","pipe","ignore"] }).toString().trim();
   } catch {
     try { modifiedAt = fs.statSync(abs).mtime.toISOString(); } catch {}
   }
@@ -331,8 +332,8 @@ console.log(`Also wrote per-file dumps under ${filesRoot}/**`);
 // Optional: tiny directory summary
 const byDir = {};
 for (const f of manifest.files) {
-  const dirFull = require('path').posix.dirname(f.path);     // oikea hakemisto
-  const dir = dirFull.split('/').slice(0, 3).join('/') || '.'; // rajaa 3 tasoon
+  const dirFull = path.posix.dirname(f.path);                   // ESM: käytä importoitua path-objektia
+  const dir = dirFull.split('/').slice(0, 3).join('/') || '.';  // rajaa 3 tasoon
   byDir[dir] = (byDir[dir] || 0) + 1;
 }
 console.log("Collected by dir:", byDir);
