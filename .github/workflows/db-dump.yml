@@ -3,20 +3,32 @@ name: DB Schema Dump
 on:
   workflow_dispatch: {}
 
+# Ilman tätä git push EI toimi
+permissions:
+  contents: write
+
+concurrency:
+  group: db-schema-dump
+  cancel-in-progress: true
+
 jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install pg client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Dump schema (force IPv4 + TLS, no parsing)
-        env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres
+      - name: Install pg client + tools
         run: |
-          set -eo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client dnsutils ca-certificates
+
+      - name: Dump schema (robust IPv4 + TLS)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }} # esim: postgresql://postgres:<PWD>@db.<ref>.supabase.co:5432/postgres?sslmode=require
+        run: |
+          set -euo pipefail
           mkdir -p supabase
 
           # 0) Secret-check
@@ -25,40 +37,63 @@ jobs:
           fi
           echo "Secret OK (maskattu)."
 
-          # 1) KOVA HOST → ei parsintaa
+          # 1) Host (kovana tai URL:sta – tämä ei tulosta salasanaa)
+          # Jos haluat kovakoodata, vaihda tähän oma hostisi:
           HOST="db.musrmpblsazxcrhwthtc.supabase.co"
+          echo "Host: $HOST"
 
-          # 2) IPv4 pakotus + TLS
-          IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
-          if [ -z "${IP:-}" ]; then
-            echo "FATAL: IPv4 lookup failed for $HOST"; exit 2
+          # 2) IPv4-pakotus: ÄLÄ ANNA TAPPAA JOBIA, jos IPv4 lookup tökkää
+          set +o pipefail
+          IP=$(getent ahostsv4 "$HOST" | awk 'NR==1{print $1}')
+          RC=$?
+          set -o pipefail
+
+          if [ $RC -ne 0 ] || [ -z "${IP:-}" ]; then
+            # Fallback: dig (dnsutils)
+            IP=$(dig +short A "$HOST" | head -n1 || true)
           fi
-          echo "Using IPv4: $IP"
-          export PGHOSTADDR="$IP"
+
+          if [ -n "${IP:-}" ]; then
+            echo "Using IPv4: $IP"
+            export PGHOSTADDR="$IP"
+          else
+            echo "WARN: IPv4 lookup ei onnistunut – jatketaan DNS:llä (ei PGHOSTADDR)."
+          fi
+
+          # 3) TLS always
           export PGSSLMODE="require"
 
-          # 3) Lisää sslmode=require URL:iin jos puuttuu
+          # 4) Lisää sslmode=require URL:iin vain jos puuttuu
           URL_TLS="$DB_URL"
           case "$URL_TLS" in
-            *sslmode=*) : ;;
+            *\?*sslmode=*) : ;;
             *\?*) URL_TLS="$URL_TLS&sslmode=require" ;;
-            *)    URL_TLS="$URL_TLS?sslmode=require" ;;
+            *sslmode=*) : ;;
+            *) URL_TLS="$URL_TLS?sslmode=require" ;;
           esac
 
-          # 4) Savutesti – failaa heti jos yhteys ei toimi
+          # 5) Savutesti – tulosta psql-versio ja testaa yhteys
           psql --version
-          PGCONNECT_TIMEOUT=10 psql -Atqc "select current_user, current_database();" "$URL_TLS"
+          PGCONNECT_TIMEOUT=10 psql -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS" >/dev/null
+          echo "Connection OK."
 
-          # 5) Skeemadumppi (system-skeemat pois)
-          pg_dump -s -N extensions -N pg_catalog -N information_schema "$URL_TLS" > supabase/schema.sql
+          # 6) Skeemadumppi (siisti versio diffeihin)
+          pg_dump \
+            -s --no-owner --no-privileges \
+            -N pg_catalog -N information_schema -N pg_toast -N extensions \
+            "$URL_TLS" > supabase/schema.sql
 
           echo "---- schema.sql head ----"
-          head -n 30 supabase/schema.sql || true
+          head -n 40 supabase/schema.sql || true
+          echo "Schema dump OK ($(wc -l < supabase/schema.sql) riviä)."
 
-      - name: Commit dump
+      - name: Commit & push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           git config user.name "schema-bot"
           git config user.email "bot@example.com"
           git add supabase/schema.sql
           git commit -m "db: update schema.sql" || echo "No changes"
-          git push
+          git push origin HEAD:${GITHUB_REF_NAME:-${GITHUB_HEAD_REF:-$(git rev-parse --abbrev-ref HEAD)}}
