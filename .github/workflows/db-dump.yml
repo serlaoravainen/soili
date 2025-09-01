@@ -12,12 +12,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pg client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      # Asenna nimenomaan Postgres 17 -clientit PGDG-reposta
+      - name: Install PostgreSQL 17 client (psql/pg_dump)
+        run: |
+          set -euo pipefail
+          echo "Adding PGDG repo…"
+          source /etc/os-release
+          echo "deb http://apt.postgresql.org/pub/repos/apt ${UBUNTU_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/postgresql.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          /usr/lib/postgresql/17/bin/psql    --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
 
       - name: Dump schema via Session Pooler (IPv4 + TLS)
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres.<REF>:<PWD>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres?sslmode=require
         run: |
           set -euo pipefail
           mkdir -p supabase
@@ -26,7 +36,7 @@ jobs:
             echo "FATAL: SUPABASE_DB_URL puuttuu"; exit 2
           fi
 
-          # Varmista sslmode=require
+          # Pakota TLS parametri varmuuden vuoksi
           URL_TLS="$DB_URL"
           case "$URL_TLS" in
             *sslmode=*) : ;;
@@ -34,12 +44,15 @@ jobs:
             *)    URL_TLS="$URL_TLS?sslmode=require" ;;
           esac
 
-          echo "Testing connection..."
-          PGCONNECT_TIMEOUT=10 psql -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS"
+          PSQL=/usr/lib/postgresql/17/bin/psql
+          PGDUMP=/usr/lib/postgresql/17/bin/pg_dump
+
+          echo "Testing connection with psql 17…"
+          PGCONNECT_TIMEOUT=10 "$PSQL" -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS"
           echo "Connection OK."
 
-          echo "Dumping schema..."
-          pg_dump \
+          echo "Dumping schema with pg_dump 17…"
+          "$PGDUMP" \
             -s --no-owner --no-privileges \
             -N pg_catalog -N information_schema -N pg_toast -N extensions \
             "$URL_TLS" > supabase/schema.sql
