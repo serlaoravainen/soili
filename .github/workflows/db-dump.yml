@@ -3,72 +3,69 @@ name: DB Schema Dump
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pg_dump
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      # Robust: parsii URL:n, pakottaa IPv4:n, käyttää TLS:ää
-      - name: Dump schema (parse URL + force IPv4 + TLS)
-        env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          # Esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres?sslmode=require
+      # Asenna nimenomaan Postgres 17 -clientit PGDG-reposta
+      - name: Install PostgreSQL 17 client (psql/pg_dump)
         run: |
           set -euo pipefail
+          echo "Adding PGDG repo…"
+          source /etc/os-release
+          echo "deb http://apt.postgresql.org/pub/repos/apt ${UBUNTU_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/postgresql.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          /usr/lib/postgresql/17/bin/psql    --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
 
+      - name: Dump schema via Session Pooler (IPv4 + TLS)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres.<REF>:<PWD>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres?sslmode=require
+        run: |
+          set -euo pipefail
           mkdir -p supabase
 
-          # --- parse DB_URL turvallisesti Pythonilla ---
-          read -r USER PASS HOST PORT DB SSL <<EOF
-          $(python3 - <<'PY'
-          import os, urllib.parse
-          u=os.environ['DB_URL']
-          p=urllib.parse.urlparse(u)
-          q=dict(urllib.parse.parse_qsl(p.query))
-          print(
-            (urllib.parse.unquote_plus(p.username or "")) or "",
-            (urllib.parse.unquote_plus(p.password or "")) or "",
-            p.hostname or "",
-            str(p.port or 5432),
-            (p.path.lstrip("/") or "postgres"),
-            (q.get("sslmode","require")),
-          )
-          PY
-          )
-          EOF
-
-          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$DB" ]; then
-            echo "FATAL: URL parse failed. Check SUPABASE_DB_URL secret."; exit 2
+          if [ -z "${DB_URL:-}" ]; then
+            echo "FATAL: SUPABASE_DB_URL puuttuu"; exit 2
           fi
 
-          # --- pakota IPv4 ---
-          IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
-          if [ -z "${IP:-}" ]; then
-            echo "FATAL: Could not resolve IPv4 for $HOST"; exit 2
-          fi
-          echo "Using IPv4: $IP"
+          # Pakota TLS parametri varmuuden vuoksi
+          URL_TLS="$DB_URL"
+          case "$URL_TLS" in
+            *sslmode=*) : ;;
+            *\?*) URL_TLS="$URL_TLS&sslmode=require" ;;
+            *)    URL_TLS="$URL_TLS?sslmode=require" ;;
+          esac
 
-          # --- libpq env: host SNI:lle, hostaddr IPv4:lle ---
-          export PGHOST="$HOST"
-          export PGHOSTADDR="$IP"
-          export PGPORT="$PORT"
-          export PGUSER="$USER"
-          export PGPASSWORD="$PASS"
-          export PGDATABASE="$DB"
-          export PGSSLMODE="${SSL:-require}"
+          PSQL=/usr/lib/postgresql/17/bin/psql
+          PGDUMP=/usr/lib/postgresql/17/bin/pg_dump
 
-          # --- skeema vain, siivoa system-skeemat ---
-          pg_dump -s -N extensions -N pg_catalog -N information_schema > supabase/schema.sql
+          echo "Testing connection with psql 17…"
+          PGCONNECT_TIMEOUT=10 "$PSQL" -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS"
+          echo "Connection OK."
+
+          echo "Dumping schema with pg_dump 17…"
+          "$PGDUMP" \
+            -s --no-owner --no-privileges \
+            -N pg_catalog -N information_schema -N pg_toast -N extensions \
+            "$URL_TLS" > supabase/schema.sql
 
           echo "---- schema.sql head ----"
-          head -n 30 supabase/schema.sql || true
+          head -n 40 supabase/schema.sql || true
+          echo "Schema dump OK ($(wc -l < supabase/schema.sql) riviä)."
 
-      - name: Commit dump
+      - name: Commit & push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           git config user.name "schema-bot"
           git config user.email "bot@example.com"
           git add supabase/schema.sql
