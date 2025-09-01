@@ -12,59 +12,60 @@ jobs:
       - name: Install pg_dump
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      # 🔧 TÄMÄ on se kriittinen muutos: pakotetaan IPv4 + TLS
-- name: Dump schema (robust: parse URL + force IPv4 + TLS)
-  env:
-    DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-    # Esim: postgresql://postgres:<SALASANA>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres?sslmode=require
-  run: |
-    set -euo pipefail
+      # Robust: parsii URL:n, pakottaa IPv4:n, käyttää TLS:ää
+      - name: Dump schema (parse URL + force IPv4 + TLS)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # Esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres?sslmode=require
+        run: |
+          set -euo pipefail
 
-    mkdir -p supabase
+          mkdir -p supabase
 
-    # 1) Parsitaan DB_URL turvallisesti Pythonilla
-    read -r USER PASS HOST PORT DB SSL <<EOF
-    $(python3 - <<'PY'
-import os, urllib.parse
-u=os.environ['DB_URL']
-p=urllib.parse.urlparse(u)
-q=dict(urllib.parse.parse_qsl(p.query))
-print(
-  (urllib.parse.unquote_plus(p.username or "")) or "",
-  (urllib.parse.unquote_plus(p.password or "")) or "",
-  p.hostname or "",
-  str(p.port or 5432),
-  (p.path.lstrip("/") or "postgres"),
-  (q.get("sslmode","require")),
-)
-PY
-)
-EOF
+          # --- parse DB_URL turvallisesti Pythonilla ---
+          read -r USER PASS HOST PORT DB SSL <<EOF
+          $(python3 - <<'PY'
+          import os, urllib.parse
+          u=os.environ['DB_URL']
+          p=urllib.parse.urlparse(u)
+          q=dict(urllib.parse.parse_qsl(p.query))
+          print(
+            (urllib.parse.unquote_plus(p.username or "")) or "",
+            (urllib.parse.unquote_plus(p.password or "")) or "",
+            p.hostname or "",
+            str(p.port or 5432),
+            (p.path.lstrip("/") or "postgres"),
+            (q.get("sslmode","require")),
+          )
+          PY
+          )
+          EOF
 
-    if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$DB" ]; then
-      echo "FATAL: URL parse failed. Check SUPABASE_DB_URL secret."; exit 2
-    fi
+          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$DB" ]; then
+            echo "FATAL: URL parse failed. Check SUPABASE_DB_URL secret."; exit 2
+          fi
 
-    # 2) IPv4 lookup (pakota A-record)
-    IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
-    if [ -z "${IP:-}" ]; then echo "FATAL: Could not resolve IPv4 for $HOST"; exit 2; fi
-    echo "Using IPv4: $IP"
+          # --- pakota IPv4 ---
+          IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
+          if [ -z "${IP:-}" ]; then
+            echo "FATAL: Could not resolve IPv4 for $HOST"; exit 2
+          fi
+          echo "Using IPv4: $IP"
 
-    # 3) libpq env: host=SNI:lle, hostaddr=IPv4 → vältetään IPv6
-    export PGHOST="$HOST"
-    export PGHOSTADDR="$IP"
-    export PGPORT="$PORT"
-    export PGUSER="$USER"
-    export PGPASSWORD="$PASS"
-    export PGDATABASE="$DB"
-    export PGSSLMODE="${SSL:-require}"
+          # --- libpq env: host SNI:lle, hostaddr IPv4:lle ---
+          export PGHOST="$HOST"
+          export PGHOSTADDR="$IP"
+          export PGPORT="$PORT"
+          export PGUSER="$USER"
+          export PGPASSWORD="$PASS"
+          export PGDATABASE="$DB"
+          export PGSSLMODE="${SSL:-require}"
 
-    # 4) Dump skeema (ei system-skeemoja)
-    pg_dump -s -N extensions -N pg_catalog -N information_schema > supabase/schema.sql
+          # --- skeema vain, siivoa system-skeemat ---
+          pg_dump -s -N extensions -N pg_catalog -N information_schema > supabase/schema.sql
 
-    echo "---- schema.sql head ----"
-    head -n 30 supabase/schema.sql || true
-
+          echo "---- schema.sql head ----"
+          head -n 30 supabase/schema.sql || true
 
       - name: Commit dump
         run: |
