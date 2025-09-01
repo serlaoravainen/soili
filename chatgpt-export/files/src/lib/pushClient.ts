@@ -20,7 +20,10 @@ export async function ensureServiceWorker() {
 }
 
 export async function requestPermissionAndSubscribe(): Promise<boolean> {
-  if (!PUBLIC_VAPID) { console.error("NEXT_PUBLIC_VAPID_PUBLIC_KEY puuttuu"); return false; }
+  if (!PUBLIC_VAPID) {
+    console.error("NEXT_PUBLIC_VAPID_PUBLIC_KEY puuttuu");
+    return false;
+  }
 
   const perm = await Notification.requestPermission();
   if (perm !== "granted") return false;
@@ -32,19 +35,18 @@ export async function requestPermissionAndSubscribe(): Promise<boolean> {
   });
 
   // talleta supabaseen
-const json: PushSubscriptionJSON = sub.toJSON();
-const endpoint: string = json.endpoint!;
-const p256dh: string | undefined = json.keys?.p256dh;
-const auth: string | undefined = json.keys?.auth;
+  const json: PushSubscriptionJSON = sub.toJSON();
+  const endpoint: string = json.endpoint!;
+  const p256dh: string | undefined = json.keys?.p256dh;
+  const auth: string | undefined = json.keys?.auth;
 
-const { error } = await supabase
-  .from("push_subscriptions")
-  .upsert({ endpoint, p256dh, auth, is_active: true }, { onConflict: "endpoint" });
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .upsert({ endpoint, p256dh, auth, is_active: true }, { onConflict: "endpoint" });
 
-if (error) {
-  console.error(error);
-  return false;
-}
-return true;
-
+  if (error) {
+    console.error(error);
+    return false;
+  }
+  return true;
 }

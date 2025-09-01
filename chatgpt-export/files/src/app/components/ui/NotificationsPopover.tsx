@@ -12,7 +12,6 @@ import { requestPermissionAndSubscribe } from "@/lib/pushClient";
 
 // NotificationsPopover.tsx, importtien jälkeen
 
-
 // korvaa koko enablePush
 async function enablePush() {
   try {
@@ -23,7 +22,6 @@ async function enablePush() {
     toast.error("Pushin käyttöönotto epäonnistui");
   }
 }
-
 
 async function disablePush() {
   try {
@@ -42,7 +40,6 @@ async function disablePush() {
     toast.error("Pushin poisto epäonnistui");
   }
 }
-
 
 type NotiType =
   | "absence_request"
@@ -77,7 +74,6 @@ function iconFor(type: Noti["type"]) {
   }
 }
 
-
 function timeAgo(iso: string) {
   const diff = Math.max(0, Date.now() - new Date(iso).getTime());
   const m = Math.floor(diff / 60000);
@@ -94,7 +90,6 @@ export default function NotificationsPopover() {
   const [items, setItems] = React.useState<Noti[]>([]);
   const unread = items.filter((n) => !n.is_read).length;
 
-
   React.useEffect(() => {
     (async () => {
       const { data, error } = await supabase
@@ -110,7 +105,7 @@ export default function NotificationsPopover() {
     })();
   }, []);
 
-    React.useEffect(() => {
+  React.useEffect(() => {
     if (!open) return;
     (async () => {
       const { data, error } = await supabase
@@ -122,31 +117,26 @@ export default function NotificationsPopover() {
     })();
   }, [open]);
 
+  React.useEffect(() => {
+    const ch = supabase
+      .channel("notifications-rt")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications" },
+        (payload) => {
+          const newRow = payload.new as Noti | null;
+          if (!newRow) return;
 
-React.useEffect(() => {
-  const ch = supabase
-    .channel("notifications-rt")
-    .on(
-      "postgres_changes",
-      { event: "*", schema: "public", table: "notifications" },
-(payload) => {
-  const newRow = payload.new as Noti | null;
-  if (!newRow) return;
-
-  if (payload.eventType === "INSERT") {
-    setItems((prev) => [newRow, ...prev].slice(0, 50));
-  } else if (payload.eventType === "UPDATE") {
-    setItems((prev) =>
-      prev.map((n) => (n.id === newRow.id ? newRow : n))
-    );
-  }
-}
-
-    )
-    .subscribe();
-  return () => void supabase.removeChannel(ch);
-}, []);
-
+          if (payload.eventType === "INSERT") {
+            setItems((prev) => [newRow, ...prev].slice(0, 50));
+          } else if (payload.eventType === "UPDATE") {
+            setItems((prev) => prev.map((n) => (n.id === newRow.id ? newRow : n)));
+          }
+        },
+      )
+      .subscribe();
+    return () => void supabase.removeChannel(ch);
+  }, []);
 
   async function markAllRead() {
     const { error } = await supabase
@@ -161,16 +151,15 @@ React.useEffect(() => {
     setItems((prev) => prev.map((n) => ({ ...n, is_read: true })));
   }
 
- // markRead – tee optimistic päivitys vain jos klikattu
-async function markRead(id: string) {
-  setItems((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
-  const { error } = await supabase.from("notifications").update({ is_read: true }).eq("id", id);
-  if (error) {
-    console.error(error);
-    toast.error("Merkintä epäonnistui");
+  // markRead – tee optimistic päivitys vain jos klikattu
+  async function markRead(id: string) {
+    setItems((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
+    const { error } = await supabase.from("notifications").update({ is_read: true }).eq("id", id);
+    if (error) {
+      console.error(error);
+      toast.error("Merkintä epäonnistui");
+    }
   }
-}
-
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -178,7 +167,10 @@ async function markRead(id: string) {
         <Button variant="ghost" size="sm" className="relative">
           <Bell className="w-4 h-4" />
           {unread > 0 && (
-            <Badge variant="destructive" className="absolute -top-1 -right-1 h-5 min-w-[20px] px-1 justify-center">
+            <Badge
+              variant="destructive"
+              className="absolute -top-1 -right-1 h-5 min-w-[20px] px-1 justify-center"
+            >
               {unread}
             </Badge>
           )}
@@ -210,29 +202,33 @@ async function markRead(id: string) {
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
                     <div className="font-medium text-sm">{n.title}</div>
-                    {!n.is_read && <span className="w-1.5 h-1.5 rounded-full bg-foreground inline-block" />}
+                    {!n.is_read && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-foreground inline-block" />
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">{n.message}</div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5">{timeAgo(n.created_at)}</div>
+                  <div className="text-[10px] text-muted-foreground mt-0.5">
+                    {timeAgo(n.created_at)}
+                  </div>
                 </div>
               </button>
             ))}
           </div>
         )}
-<Separator />
-<div className="p-2 flex flex-wrap items-center justify-between gap-2">
-  <Button variant="ghost" size="sm" className="shrink-0" onClick={markAllRead}>
-    Merkitse kaikki luetuiksi
-  </Button>
-  <div className="flex flex-wrap gap-2">
-    <Button variant="outline" size="sm" className="shrink-0" onClick={enablePush}>
-      Ota push käyttöön
-    </Button>
-    <Button variant="ghost" size="sm" className="shrink-0" onClick={disablePush}>
-      Poista push
-    </Button>
-  </div>
-</div>
+        <Separator />
+        <div className="p-2 flex flex-wrap items-center justify-between gap-2">
+          <Button variant="ghost" size="sm" className="shrink-0" onClick={markAllRead}>
+            Merkitse kaikki luetuiksi
+          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" className="shrink-0" onClick={enablePush}>
+              Ota push käyttöön
+            </Button>
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={disablePush}>
+              Poista push
+            </Button>
+          </div>
+        </div>
       </PopoverContent>
     </Popover>
   );

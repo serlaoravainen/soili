@@ -1,35 +1,36 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
-import { Button } from './ui/button';
-import { Badge } from './ui/badge';
-import { Avatar, AvatarFallback } from './ui/avatar';
-import { Textarea } from './ui/textarea';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
-import { 
-  Clock, 
-  CheckCircle, 
-  XCircle, 
+import React, { useEffect, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
+import { Avatar, AvatarFallback } from "./ui/avatar";
+import { Textarea } from "./ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import {
+  Clock,
+  CheckCircle,
+  XCircle,
   Calendar,
   MessageSquare,
   User,
-  AlertTriangle
-} from 'lucide-react';
-import { AbsenceRequest } from '../types';
-import { toast } from 'sonner';
-import { supabase } from '@/lib/supaBaseClient';
+  AlertTriangle,
+} from "lucide-react";
+import { AbsenceRequest } from "../types";
+import { toast } from "sonner";
+import { supabase } from "@/lib/supaBaseClient";
 
 const AbsenceControlPanel = () => {
   const [requests, setRequests] = useState<AbsenceRequest[]>([]);
-  const [adminResponse, setAdminResponse] = useState('');
+  const [adminResponse, setAdminResponse] = useState("");
 
   // --- FETCH FROM SUPABASE ---
   useEffect(() => {
     const fetchAbsences = async () => {
-const { data, error } = await supabase
-  .from('absences')
-  .select(`
+      const { data, error } = await supabase
+        .from("absences")
+        .select(
+          `
     id,
     employee_id,
     start_date,
@@ -39,138 +40,158 @@ const { data, error } = await supabase
     status,
     submitted_at,
     employees:employees!absences_employee_id_fkey ( name )
-  `)
-  .order('submitted_at', { ascending: false });
+  `,
+        )
+        .order("submitted_at", { ascending: false });
 
-if (error) {
-  console.error(error);
-  toast.error('Poissaolojen haku epäonnistui');
-  return;
-}
+      if (error) {
+        console.error(error);
+        toast.error("Poissaolojen haku epäonnistui");
+        return;
+      }
 
-type AbsenceRow = {
-  id: string;
-  employee_id: string;
-  start_date: string;
-  end_date: string | null;
-  reason: string | null;
-  message: string | null;
-  status: 'pending' | 'approved' | 'declined';
-  submitted_at: string;
-  employees?: { name: string }[] | { name: string } | null;
-};
+      type AbsenceRow = {
+        id: string;
+        employee_id: string;
+        start_date: string;
+        end_date: string | null;
+        reason: string | null;
+        message: string | null;
+        status: "pending" | "approved" | "declined";
+        submitted_at: string;
+        employees?: { name: string }[] | { name: string } | null;
+      };
 
-const mapped: AbsenceRequest[] = (data as AbsenceRow[]).map((r) => {
-  const employeeName = Array.isArray(r.employees)
-    ? r.employees[0]?.name
-    : r.employees?.name;
+      const mapped: AbsenceRequest[] = (data as AbsenceRow[]).map((r) => {
+        const employeeName = Array.isArray(r.employees) ? r.employees[0]?.name : r.employees?.name;
 
-  return {
-    id: r.id,
-    employeeId: r.employee_id,
-    employeeName: employeeName ?? 'Tuntematon',
-    startDate: r.start_date,
-    endDate: r.end_date ?? '',
-    reason: r.reason ?? '',
-    status: r.status,
-    submittedAt: r.submitted_at,
-    message: r.message ?? '',
-  };
-});
-
+        return {
+          id: r.id,
+          employeeId: r.employee_id,
+          employeeName: employeeName ?? "Tuntematon",
+          startDate: r.start_date,
+          endDate: r.end_date ?? "",
+          reason: r.reason ?? "",
+          status: r.status,
+          submittedAt: r.submitted_at,
+          message: r.message ?? "",
+        };
+      });
 
       setRequests(mapped);
-      
     };
 
     fetchAbsences();
   }, []);
 
   // --- STATUS HELPERS (UI) ---
-  const getStatusBadge = (status: AbsenceRequest['status']) => {
+  const getStatusBadge = (status: AbsenceRequest["status"]) => {
     switch (status) {
-      case 'pending':
-        return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-300"><Clock className="w-3 h-3 mr-1" />Odottaa</Badge>;
-      case 'approved':
-        return <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300"><CheckCircle className="w-3 h-3 mr-1" />Hyväksytty</Badge>;
-      case 'declined':
-        return <Badge variant="outline" className="bg-red-50 text-red-700 border-red-300"><XCircle className="w-3 h-3 mr-1" />Hylätty</Badge>;
+      case "pending":
+        return (
+          <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-300">
+            <Clock className="w-3 h-3 mr-1" />
+            Odottaa
+          </Badge>
+        );
+      case "approved":
+        return (
+          <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
+            <CheckCircle className="w-3 h-3 mr-1" />
+            Hyväksytty
+          </Badge>
+        );
+      case "declined":
+        return (
+          <Badge variant="outline" className="bg-red-50 text-red-700 border-red-300">
+            <XCircle className="w-3 h-3 mr-1" />
+            Hylätty
+          </Badge>
+        );
     }
   };
 
   // --- SUPABASE UPDATES ---
-const handleApprove = async (requestId: string) => {
-  // Optimistinen päivitys
-  setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'approved' } : r));
+  const handleApprove = async (requestId: string) => {
+    // Optimistinen päivitys
+    setRequests((prev) => prev.map((r) => (r.id === requestId ? { ...r, status: "approved" } : r)));
 
-  const target = requests.find(r => r.id === requestId);
-  const { error } = await supabase.from('absences').update({ status: 'approved' }).eq('id', requestId);
-  if (error) {
-    console.error('[ABSENCE APPROVE ERROR]', error.code, error.message, error.details);
-    // revert
-    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
-    toast.error('Hyväksyntä epäonnistui');
-    return;
-  }
+    const target = requests.find((r) => r.id === requestId);
+    const { error } = await supabase
+      .from("absences")
+      .update({ status: "approved" })
+      .eq("id", requestId);
+    if (error) {
+      console.error("[ABSENCE APPROVE ERROR]", error.code, error.message, error.details);
+      // revert
+      setRequests((prev) =>
+        prev.map((r) => (r.id === requestId ? { ...r, status: "pending" } : r)),
+      );
+      toast.error("Hyväksyntä epäonnistui");
+      return;
+    }
 
-  // Luo ilmoitus
-  if (target) {
-    await supabase.from("notifications").insert({
-      type: "absence_approved",
-      title: "Poissaolo hyväksytty",
-      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
-    });
-  }
+    // Luo ilmoitus
+    if (target) {
+      await supabase.from("notifications").insert({
+        type: "absence_approved",
+        title: "Poissaolo hyväksytty",
+        message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
+      });
+    }
 
-  toast.success('Poissaolopyyntö hyväksytty');
-};
+    toast.success("Poissaolopyyntö hyväksytty");
+  };
 
+  const handleDecline = async (requestId: string) => {
+    setRequests((prev) => prev.map((r) => (r.id === requestId ? { ...r, status: "declined" } : r)));
 
-const handleDecline = async (requestId: string) => {
-  setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
+    const target = requests.find((r) => r.id === requestId);
+    const { error } = await supabase
+      .from("absences")
+      .update({ status: "declined" })
+      .eq("id", requestId);
+    if (error) {
+      console.error("[ABSENCE DECLINE ERROR]", error.code, error.message, error.details);
+      setRequests((prev) =>
+        prev.map((r) => (r.id === requestId ? { ...r, status: "pending" } : r)),
+      );
+      toast.error("Hylkäys epäonnistui");
+      return;
+    }
 
-  const target = requests.find(r => r.id === requestId);
-  const { error } = await supabase.from('absences').update({ status: 'declined' }).eq('id', requestId);
-  if (error) {
-    console.error('[ABSENCE DECLINE ERROR]', error.code, error.message, error.details);
-    setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
-    toast.error('Hylkäys epäonnistui');
-    return;
-  }
+    // Luo ilmoitus
+    if (target) {
+      await supabase.from("notifications").insert({
+        type: "absence_declined",
+        title: "Poissaolo hylätty",
+        message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
+      });
+    }
 
-  // Luo ilmoitus
-  if (target) {
-    await supabase.from("notifications").insert({
-      type: "absence_declined",
-      title: "Poissaolo hylätty",
-      message: `${target.employeeName}: ${target.startDate}${target.endDate ? " – " + target.endDate : ""}`,
-    });
-  }
-
-  toast.success('Poissaolopyyntö hylätty');
-};
-
+    toast.success("Poissaolopyyntö hylätty");
+  };
 
   // --- DERIVED LISTS (UI pysyy samana) ---
-  const pendingRequests = requests.filter(req => req.status === 'pending');
-  const processedRequests = requests.filter(req => req.status !== 'pending');
+  const pendingRequests = requests.filter((req) => req.status === "pending");
+  const processedRequests = requests.filter((req) => req.status !== "pending");
 
   const formatDate = (dateString: string) => {
-    if (!dateString) return '';
-    return new Date(dateString).toLocaleDateString('fi-FI', {
-      day: 'numeric',
-      month: 'numeric',
-      year: 'numeric'
+    if (!dateString) return "";
+    return new Date(dateString).toLocaleDateString("fi-FI", {
+      day: "numeric",
+      month: "numeric",
+      year: "numeric",
     });
   };
 
   const formatDateTime = (dateString: string) => {
-    if (!dateString) return '';
-    return new Date(dateString).toLocaleDateString('fi-FI', {
-      day: 'numeric',
-      month: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
+    if (!dateString) return "";
+    return new Date(dateString).toLocaleDateString("fi-FI", {
+      day: "numeric",
+      month: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
     });
   };
 
@@ -197,12 +218,18 @@ const handleDecline = async (requestId: string) => {
             </div>
           ) : (
             pendingRequests.map((request) => (
-              <div key={request.id} className="border border-border rounded-lg p-4 bg-background hover:shadow-md transition-shadow">
+              <div
+                key={request.id}
+                className="border border-border rounded-lg p-4 bg-background hover:shadow-md transition-shadow"
+              >
                 <div className="flex items-start justify-between">
                   <div className="flex items-start space-x-3 flex-1">
                     <Avatar className="w-10 h-10">
                       <AvatarFallback className="bg-primary text-primary-foreground">
-                        {request.employeeName?.split(' ').map(n => n[0]).join('')}
+                        {request.employeeName
+                          ?.split(" ")
+                          .map((n) => n[0])
+                          .join("")}
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
@@ -214,8 +241,9 @@ const handleDecline = async (requestId: string) => {
                         <div className="flex items-center gap-2">
                           <Calendar className="w-4 h-4" />
                           <span>
-                            {formatDate(request.startDate)} 
-                            {request.startDate !== request.endDate && ` - ${formatDate(request.endDate)}`}
+                            {formatDate(request.startDate)}
+                            {request.startDate !== request.endDate &&
+                              ` - ${formatDate(request.endDate)}`}
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
@@ -224,7 +252,7 @@ const handleDecline = async (requestId: string) => {
                         </div>
                         <div className="flex items-center gap-2">
                           <Clock className="w-4 h-4" />
-                          <span>Jätetty: {formatDateTime(request.submittedAt || '')}</span>
+                          <span>Jätetty: {formatDateTime(request.submittedAt || "")}</span>
                         </div>
                       </div>
                       {request.message && (
@@ -240,9 +268,7 @@ const handleDecline = async (requestId: string) => {
                   <div className="flex items-center gap-2 ml-4">
                     <Dialog>
                       <DialogTrigger asChild>
-                        <div
-                          className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3 cursor-pointer"
-                        >
+                        <div className="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3 cursor-pointer">
                           <MessageSquare className="w-4 h-4 mr-2" />
                           Vastaa
                         </div>
@@ -254,7 +280,7 @@ const handleDecline = async (requestId: string) => {
                         <div className="space-y-4">
                           <div className="space-y-2">
                             <label className="text-sm font-medium">Viesti työntekijälle:</label>
-                            <Textarea 
+                            <Textarea
                               value={adminResponse}
                               onChange={(e) => setAdminResponse(e.target.value)}
                               placeholder="Kirjoita viesti..."
@@ -262,21 +288,21 @@ const handleDecline = async (requestId: string) => {
                             />
                           </div>
                           <div className="flex gap-2">
-                            <Button 
+                            <Button
                               onClick={() => {
                                 handleApprove(request.id);
-                                setAdminResponse('');
+                                setAdminResponse("");
                               }}
                               className="flex-1"
                             >
                               <CheckCircle className="w-4 h-4 mr-2" />
                               Hyväksy
                             </Button>
-                            <Button 
+                            <Button
                               variant="destructive"
                               onClick={() => {
                                 handleDecline(request.id);
-                                setAdminResponse('');
+                                setAdminResponse("");
                               }}
                               className="flex-1"
                             >
@@ -287,14 +313,14 @@ const handleDecline = async (requestId: string) => {
                         </div>
                       </DialogContent>
                     </Dialog>
-                    <Button 
+                    <Button
                       size="sm"
                       onClick={() => handleApprove(request.id)}
                       className="bg-green-600 hover:bg-green-700"
                     >
                       <CheckCircle className="w-4 h-4" />
                     </Button>
-                    <Button 
+                    <Button
                       variant="destructive"
                       size="sm"
                       onClick={() => handleDecline(request.id)}
@@ -317,11 +343,17 @@ const handleDecline = async (requestId: string) => {
         <CardContent>
           <div className="space-y-3">
             {processedRequests.map((request) => (
-              <div key={request.id} className="flex items-center justify-between p-3 border border-border rounded-md bg-muted/30">
+              <div
+                key={request.id}
+                className="flex items-center justify-between p-3 border border-border rounded-md bg-muted/30"
+              >
                 <div className="flex items-center space-x-3">
                   <Avatar className="w-8 h-8">
                     <AvatarFallback className="text-xs">
-                      {request.employeeName?.split(' ').map(n => n[0]).join('')}
+                      {request.employeeName
+                        ?.split(" ")
+                        .map((n) => n[0])
+                        .join("")}
                     </AvatarFallback>
                   </Avatar>
                   <div>

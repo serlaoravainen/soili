@@ -26,14 +26,10 @@ import {
   ChevronDown,
   X,
   Building,
-  Users
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
-
-
-
-
 
 // pvm apurit
 function addDaysISO(iso: string, add: number) {
@@ -42,13 +38,11 @@ function addDaysISO(iso: string, add: number) {
   return d.toISOString().slice(0, 10);
 }
 
-
 function formatTime(d = new Date()) {
   return d.toLocaleTimeString("fi-FI", { hour: "2-digit", minute: "2-digit" });
 }
 
-
-  function getISOWeek(dateIso: string) {
+function getISOWeek(dateIso: string) {
   const d = new Date(dateIso + "T00:00:00");
   // ISO week algorithm
   const dayNum = (d.getUTCDay() + 6) % 7;
@@ -57,12 +51,13 @@ function formatTime(d = new Date()) {
   const week =
     1 +
     Math.round(
-      ((d.getTime() - firstThursday.getTime()) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) /
-        7
+      ((d.getTime() - firstThursday.getTime()) / 86400000 -
+        3 +
+        ((firstThursday.getUTCDay() + 6) % 7)) /
+        7,
     );
   return week;
 }
-
 
 type EmpRow = {
   id: string;
@@ -82,20 +77,22 @@ type ShiftRow = {
 const Toolbar = () => {
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
-  const range = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)), [START_ISO, DAYS]);
+  const range = useMemo(
+    () => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)),
+    [START_ISO, DAYS],
+  );
 
+  const undo = useScheduleStore((s) => s.undo);
+  const redo = useScheduleStore((s) => s.redo);
+  const canUndo = useScheduleStore((s) => s.undoStack.length > 0);
+  const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
 
-const undo = useScheduleStore((s) => s.undo);
-const redo = useScheduleStore((s) => s.redo);
-const canUndo = useScheduleStore((s) => s.undoStack.length > 0);
-const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
+  const saveAll = useScheduleStore((s) => s.saveAll);
+  const dirty = useScheduleStore((s) => s.dirty);
 
-const saveAll = useScheduleStore((s) => s.saveAll);
-const dirty = useScheduleStore((s) => s.dirty);
-
-async function handleSave() {
-  await saveAll();
-}
+  async function handleSave() {
+    await saveAll();
+  }
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -117,7 +114,6 @@ async function handleSave() {
     return rows;
   }
 
-
   async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
     const start = range[0];
     const end = range[range.length - 1];
@@ -135,30 +131,29 @@ async function handleSave() {
   }
 
   type AbsenceRow = {
-  employee_id: string;
-  start_date: string;             // YYYY-MM-DD
-  end_date: string | null;        // voi olla null → käytä start_datea
-  status: "pending" | "approved" | "declined";
-};
+    employee_id: string;
+    start_date: string; // YYYY-MM-DD
+    end_date: string | null; // voi olla null → käytä start_datea
+    status: "pending" | "approved" | "declined";
+  };
 
-async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
-  const { data, error } = await supabase
-    .from("absences")
-    .select("employee_id, start_date, end_date, status")
-    .in("employee_id", empIds)
-    .neq("status", "declined"); // vain pending/approved blokkaa
+  async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
+    const { data, error } = await supabase
+      .from("absences")
+      .select("employee_id, start_date, end_date, status")
+      .in("employee_id", empIds)
+      .neq("status", "declined"); // vain pending/approved blokkaa
 
-  if (error) throw error;
-  const rows = (data ?? []) as AbsenceRow[];
+    if (error) throw error;
+    const rows = (data ?? []) as AbsenceRow[];
 
-  // Pidä vain poissaolot, jotka osuvat johonkin RANGE-päivään
-  return rows.filter((r) => {
-    const s = r.start_date;
-    const e = r.end_date ?? s;
-    return range.some((day) => day >= s && day <= e);
-  });
-}
-
+    // Pidä vain poissaolot, jotka osuvat johonkin RANGE-päivään
+    return rows.filter((r) => {
+      const s = r.start_date;
+      const e = r.end_date ?? s;
+      return range.some((day) => day >= s && day <= e);
+    });
+  }
 
   // ————— ACTIONS —————
 
@@ -182,11 +177,13 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
       // Map helpot tarkistukset
       const existingSet = new Set(existing.map((s) => `${s.employee_id}|${s.work_date}`));
       const absenceMap = new Map<string, { s: string; e: string }[]>();
-      absences.forEach((a: { employee_id: string; start_date: string; end_date?: string | null }) => {
-        const arr = absenceMap.get(a.employee_id) ?? [];
-        arr.push({ s: a.start_date, e: a.end_date ?? a.start_date });
-        absenceMap.set(a.employee_id, arr);
-      });
+      absences.forEach(
+        (a: { employee_id: string; start_date: string; end_date?: string | null }) => {
+          const arr = absenceMap.get(a.employee_id) ?? [];
+          arr.push({ s: a.start_date, e: a.end_date ?? a.start_date });
+          absenceMap.set(a.employee_id, arr);
+        },
+      );
 
       const batch: ShiftRow[] = [];
       for (const emp of employees) {
@@ -222,19 +219,18 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
       setLastSavedAt(formatTime());
       toast.success(`Generoitu ${batch.length} vuoroa.`);
       // Kirjaa ilmoitus
-await supabase.from("notifications").insert({
-  type: "shift_auto",
-  title: "Vuorot generoitu",
-  message: `Generoitu ${batch.length} vuoroa jaksolle ${range[0]} – ${range[range.length - 1]}.`
-});
-   } catch (e) {
-  console.error(e);
-  toast.error("Generointi epäonnistui");
-} finally {
+      await supabase.from("notifications").insert({
+        type: "shift_auto",
+        title: "Vuorot generoitu",
+        message: `Generoitu ${batch.length} vuoroa jaksolle ${range[0]} – ${range[range.length - 1]}.`,
+      });
+    } catch (e) {
+      console.error(e);
+      toast.error("Generointi epäonnistui");
+    } finally {
       setIsGenerating(false);
     }
   };
-
 
   // 3) Export CSV (Excel avaa suoraan)
   const handleExportExcel = async () => {
@@ -313,7 +309,7 @@ await supabase.from("notifications").insert({
         .sort((a, b) =>
           a.employee_id === b.employee_id
             ? a.work_date.localeCompare(b.work_date)
-            : a.employee_id.localeCompare(b.employee_id)
+            : a.employee_id.localeCompare(b.employee_id),
         )
         .map((s) => {
           const e = byId.get(s.employee_id)!;
@@ -412,7 +408,7 @@ await supabase.from("notifications").insert({
       setLastSavedAt(formatTime());
       if (bad.length) {
         toast.warning(
-          `Import OK (${batch.length} riviä). ${bad.length} riviä jäi väliin tuntemattoman emailin takia.`
+          `Import OK (${batch.length} riviä). ${bad.length} riviä jäi väliin tuntemattoman emailin takia.`,
         );
       } else {
         toast.success(`Import OK (${batch.length} riviä).`);
@@ -450,41 +446,38 @@ await supabase.from("notifications").insert({
 
             <Separator orientation="vertical" className="h-8" />
 
-<Button
-  variant="outline"
-  onClick={handleSave}
-  disabled={!dirty}
-  className={dirty ? "border-amber-500 text-amber-600" : ""}
->
-  <Save className="w-4 h-4 mr-2" />
-  Tallenna
-  {dirty && (
-    <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
-      •
-    </Badge>
-  )}
-</Button>
+            <Button
+              variant="outline"
+              onClick={handleSave}
+              disabled={!dirty}
+              className={dirty ? "border-amber-500 text-amber-600" : ""}
+            >
+              <Save className="w-4 h-4 mr-2" />
+              Tallenna
+              {dirty && (
+                <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
+                  •
+                </Badge>
+              )}
+            </Button>
 
-
-<div className="flex items-center gap-1">
-  <Button variant="ghost" size="sm" onClick={undo} disabled={!canUndo}>
-    <Undo className="w-4 h-4" />
-  </Button>
-  <Button variant="ghost" size="sm" onClick={redo} disabled={!canRedo}>
-    <Redo className="w-4 h-4" />
-  </Button>
-</div>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="sm" onClick={undo} disabled={!canUndo}>
+                <Undo className="w-4 h-4" />
+              </Button>
+              <Button variant="ghost" size="sm" onClick={redo} disabled={!canRedo}>
+                <Redo className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
 
-    {/* Center Section - View Options */}
-<div className="flex items-center gap-2">
-  <SearchPopover />  {/* 🆕 oikea haku */}
-  <FilterPopover />
-  {/* Aikajakson valitsin */}
-  <PeriodSelector />
-</div>
-
-
+          {/* Center Section - View Options */}
+          <div className="flex items-center gap-2">
+            <SearchPopover /> {/* 🆕 oikea haku */}
+            <FilterPopover />
+            {/* Aikajakson valitsin */}
+            <PeriodSelector />
+          </div>
 
           {/* Right Section - Export/Import */}
           <div className="flex items-center gap-2">
@@ -517,7 +510,6 @@ await supabase.from("notifications").insert({
             <Separator orientation="vertical" className="h-8" />
             <NotificationsPopover />
 
-
             <Button variant="ghost" size="sm" onClick={() => toast.info("Asetukset tulevat pian.")}>
               <Settings className="w-4 h-4" />
             </Button>
@@ -527,9 +519,7 @@ await supabase.from("notifications").insert({
         {/* Status Bar */}
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50">
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span>
-              Viimeksi tallennettu: {lastSavedAt ? lastSavedAt : "—"}
-            </span>
+            <span>Viimeksi tallennettu: {lastSavedAt ? lastSavedAt : "—"}</span>
             <span>•</span>
             <span>{empCount ?? "…"} työntekijää</span>
             <span>•</span>
@@ -541,7 +531,6 @@ await supabase.from("notifications").insert({
               Jakso: {range[0]} – {range[range.length - 1]}
             </span>
           </div>
-          
         </div>
       </CardContent>
     </Card>
@@ -553,7 +542,7 @@ type PeriodValue = 7 | 10 | 14 | 30;
 type PeriodItem = { value: PeriodValue; label: string; description: string };
 
 const PERIODS: PeriodItem[] = [
-  { value: 7,  label: "7 päivää",  description: "Viikkonäkymä" },
+  { value: 7, label: "7 päivää", description: "Viikkonäkymä" },
   { value: 10, label: "10 päivää", description: "Laajennettu" },
   { value: 14, label: "14 päivää", description: "Kaksiviikkoinen" },
   { value: 30, label: "30 päivää", description: "Kuukausinäkymä" },
@@ -571,9 +560,9 @@ function PeriodSelector() {
       <PopoverTrigger asChild>
         <Button variant="ghost" size="sm" className="h-9 px-3 min-w-[160px] justify-start">
           <span className="inline-flex items-center gap-2">
-             <CalIcon className="w-4 h-4" />
+            <CalIcon className="w-4 h-4" />
             <span>{current.label}</span>
-          <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="w-3 h-3" />
           </span>
         </Button>
       </PopoverTrigger>
@@ -602,7 +591,6 @@ function PeriodSelector() {
                 <div className="flex items-center">
                   {active && <Check className="w-4 h-4 text-primary" />}
                 </div>
-                
               </button>
             );
           })}
@@ -612,13 +600,12 @@ function PeriodSelector() {
   );
 }
 
-
 const DEFAULT_FILTERS = {
   departments: [] as string[],
   showActive: false,
   showInactive: false,
-  searchTerm: "", 
-  };
+  searchTerm: "",
+};
 
 function FilterPopover() {
   const [isOpen, setIsOpen] = useState(false);
@@ -626,27 +613,21 @@ function FilterPopover() {
   const setFilters = useScheduleStore((s) => s.setFilters) ?? (() => {});
   const resetFilters = useScheduleStore((s) => s.resetFilters) ?? (() => {});
 
- const employeesFromStore = useScheduleStore((s) => s.employees);
-const employees = useMemo(() => employeesFromStore ?? [], [employeesFromStore]);
+  const employeesFromStore = useScheduleStore((s) => s.employees);
+  const employees = useMemo(() => employeesFromStore ?? [], [employeesFromStore]);
 
-const employeeDepartments = useMemo(
-  () => employees.map((e) => e.department),
-  [employees]
-);
+  const employeeDepartments = useMemo(() => employees.map((e) => e.department), [employees]);
 
-const availableDepartments = useMemo(
-  () => Array.from(new Set(employeeDepartments)).filter(Boolean) as string[],
-  [employeeDepartments]
-);
-
+  const availableDepartments = useMemo(
+    () => Array.from(new Set(employeeDepartments)).filter(Boolean) as string[],
+    [employeeDepartments],
+  );
 
   // 2) Tila-suodatus on aktiivinen vain jos vain toinen toggle on päällä (XOR)
   const stateFilterActive = filters.showActive !== filters.showInactive;
 
   // 3) Badge: 1 piste osastofiltteristä (jos valittuja), 1 piste tila-XOR:sta
-  const activeFilterCount =
-    (filters.departments.length > 0 ? 1 : 0) +
-    (stateFilterActive ? 1 : 0);
+  const activeFilterCount = (filters.departments.length > 0 ? 1 : 0) + (stateFilterActive ? 1 : 0);
 
   const handleDepartmentToggle = (dept: string) => {
     const exists = filters.departments.includes(dept);
@@ -693,7 +674,12 @@ const availableDepartments = useMemo(
           <div className="flex items-center justify-between">
             <h3 className="font-medium">Suodattimet</h3>
             {(filters.departments.length > 0 || stateFilterActive) && (
-              <Button variant="ghost" size="sm" onClick={handleClearFilters} className="h-6 px-2 text-xs">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleClearFilters}
+                className="h-6 px-2 text-xs"
+              >
                 <X className="w-3 h-3 mr-1" />
                 Tyhjennä
               </Button>
@@ -734,13 +720,21 @@ const availableDepartments = useMemo(
             </div>
             <div className="space-y-2 pl-6">
               <div className="flex items-center space-x-2">
-                <Checkbox id="show-active" checked={filters.showActive} onCheckedChange={handleActiveToggle} />
+                <Checkbox
+                  id="show-active"
+                  checked={filters.showActive}
+                  onCheckedChange={handleActiveToggle}
+                />
                 <label htmlFor="show-active" className="text-sm cursor-pointer">
                   Näytä aktiiviset työntekijät
                 </label>
               </div>
               <div className="flex items-center space-x-2">
-                <Checkbox id="show-inactive" checked={filters.showInactive} onCheckedChange={handleInactiveToggle} />
+                <Checkbox
+                  id="show-inactive"
+                  checked={filters.showInactive}
+                  onCheckedChange={handleInactiveToggle}
+                />
                 <label htmlFor="show-inactive" className="text-sm cursor-pointer">
                   Näytä ei-aktiiviset työntekijät
                 </label>
@@ -753,7 +747,9 @@ const availableDepartments = useMemo(
             <>
               <Separator />
               <div className="text-xs text-muted-foreground">
-                {filters.departments.length > 0 && <div>Osastot: {filters.departments.join(", ")}</div>}
+                {filters.departments.length > 0 && (
+                  <div>Osastot: {filters.departments.join(", ")}</div>
+                )}
                 {stateFilterActive && (
                   <div>Tila: {filters.showActive ? "Vain aktiiviset" : "Vain ei-aktiiviset"}</div>
                 )}
@@ -766,10 +762,7 @@ const availableDepartments = useMemo(
   );
 }
 
-
-
 export default Toolbar;
-
 
 function SearchPopover() {
   const filters = useScheduleStore((s) => s.filters) ?? DEFAULT_FILTERS;
@@ -792,22 +785,22 @@ function SearchPopover() {
     setFilters({ searchTerm: "" });
   };
 
-React.useEffect(() => {
-  if (!open) return;
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      setLocalTerm("");
-      setFilters({ searchTerm: "" });
-    }
-  };
-  window.addEventListener("keydown", onKey);
-  return () => window.removeEventListener("keydown", onKey);
-}, [open, setFilters]);
+  React.useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLocalTerm("");
+        setFilters({ searchTerm: "" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, setFilters]);
 
   const isActive = (filters.searchTerm ?? "").trim().length > 0;
 
   return (
-      <Popover
+    <Popover
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
@@ -825,8 +818,8 @@ React.useEffect(() => {
           <div className="text-base font-semibold">Haku</div>
           <div className="text-sm text-muted-foreground">Etsi työntekijöitä</div>
           <div className="relative">
-           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
-           <input
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
+            <input
               className="w-full h-9 rounded-md border border-input bg-background px-3 pl-10 pr-10 text-sm outline-none focus:ring-2 focus:ring-ring"
               placeholder="Hae nimellä, sähköpostilla tai osastolla..."
               value={localTerm}

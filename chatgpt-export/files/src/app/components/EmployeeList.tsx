@@ -10,17 +10,7 @@ import { Switch } from "./ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import {
-  Users,
-  Plus,
-  Edit3,
-  Trash2,
-  Search,
-  UserCheck,
-  UserX,
-  Mail,
-  Building,
-} from "lucide-react";
+import { Users, Plus, Edit3, Trash2, Search, UserCheck, UserX, Mail, Building } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
 
@@ -72,16 +62,16 @@ const EmployeeList = () => {
       } else {
         // Mapataan snake_case -> camelCase
 
-          type EmployeeRow = {
+        type EmployeeRow = {
           id: string;
           name: string;
           email: string;
           department: string;
           is_active: boolean;
           created_at: string; // tai Date, jos haluat käsitellä sitä
-          };
+        };
 
-          const mapped: Employee[] = (data ?? []).map((row: EmployeeRow) => ({
+        const mapped: Employee[] = (data ?? []).map((row: EmployeeRow) => ({
           id: row.id,
           name: row.name,
           email: row.email,
@@ -96,30 +86,32 @@ const EmployeeList = () => {
   }, []);
 
   // 2) LISÄYS
-async function handleAddEmployee() {
-  const name = newEmployee.name.trim();
-  const email = newEmployee.email.trim();
-  const dep = (newEmployee.department ?? "").trim();
+  async function handleAddEmployee() {
+    const name = newEmployee.name.trim();
+    const email = newEmployee.email.trim();
+    const dep = (newEmployee.department ?? "").trim();
 
-  if (!name || !email || !dep) {
-    toast.error("Täytä kaikki pakolliset kentät");
-    return;
-  }
-  if (dep.toLowerCase() === "uusi osasto") {
-    toast.error("Kirjoita osaston nimi.");
-    return;
-  }
+    if (!name || !email || !dep) {
+      toast.error("Täytä kaikki pakolliset kentät");
+      return;
+    }
+    if (dep.toLowerCase() === "uusi osasto") {
+      toast.error("Kirjoita osaston nimi.");
+      return;
+    }
 
-  const { data, error } = await supabase
-    .from("employees")
-    .insert([{
-      name,
-      email,
-      department: dep,
-      is_active: newEmployee.isActive,
-    }])
-    .select("id, name, email, department, is_active, created_at")
-    .single();
+    const { data, error } = await supabase
+      .from("employees")
+      .insert([
+        {
+          name,
+          email,
+          department: dep,
+          is_active: newEmployee.isActive,
+        },
+      ])
+      .select("id, name, email, department, is_active, created_at")
+      .single();
 
     if (error) {
       console.error(error);
@@ -140,7 +132,6 @@ async function handleAddEmployee() {
     setNewEmployee({ name: "", email: "", department: "", isActive: true });
     setIsAddDialogOpen(false);
     toast.success(`${added.name} lisätty`);
-      
 
     await supabase.from("notifications").insert({
       type: "employee_added",
@@ -170,7 +161,7 @@ async function handleAddEmployee() {
     const nextActive = !current.isActive;
     // Optimistic update
     setEmployees((prev) =>
-      prev.map((e) => (e.id === employeeId ? { ...e, isActive: nextActive } : e))
+      prev.map((e) => (e.id === employeeId ? { ...e, isActive: nextActive } : e)),
     );
 
     const { error } = await supabase
@@ -182,7 +173,7 @@ async function handleAddEmployee() {
       console.error(error);
       // Revertoi jos meni pieleen
       setEmployees((prev) =>
-        prev.map((e) => (e.id === employeeId ? { ...e, isActive: !nextActive } : e))
+        prev.map((e) => (e.id === employeeId ? { ...e, isActive: !nextActive } : e)),
       );
       toast.error("Tilan muutos epäonnistui");
       return;
@@ -215,9 +206,7 @@ async function handleAddEmployee() {
       return;
     }
 
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === selectedEmployee.id ? selectedEmployee : e))
-    );
+    setEmployees((prev) => prev.map((e) => (e.id === selectedEmployee.id ? selectedEmployee : e)));
     setSelectedEmployee(null);
     toast.success("Työntekijätiedot päivitetty");
   }
@@ -229,21 +218,22 @@ async function handleAddEmployee() {
       (e) =>
         e.name.toLowerCase().includes(q) ||
         e.email.toLowerCase().includes(q) ||
-        e.department.toLowerCase().includes(q)
+        e.department.toLowerCase().includes(q),
     );
   }, [employees, searchTerm]);
 
   const activeEmployees = employees.filter((e) => e.isActive).length;
-const departments = useMemo(
-  () =>
-    [...new Set(
-      employees
-        .map(e => (e.department ?? "").trim())
-        .filter(v => v && v.toLowerCase() !== "uusi osasto")
-    )].sort((a, b) => a.localeCompare(b, "fi")),
-  [employees]
-);
-
+  const departments = useMemo(
+    () =>
+      [
+        ...new Set(
+          employees
+            .map((e) => (e.department ?? "").trim())
+            .filter((v) => v && v.toLowerCase() !== "uusi osasto"),
+        ),
+      ].sort((a, b) => a.localeCompare(b, "fi")),
+    [employees],
+  );
 
   // —— UI alla: pidetään sun alkuperäinen rakenne ——
   return (
@@ -281,9 +271,7 @@ const departments = useMemo(
                       <Input
                         id="name"
                         value={newEmployee.name}
-                        onChange={(e) =>
-                          setNewEmployee((p) => ({ ...p, name: e.target.value }))
-                        }
+                        onChange={(e) => setNewEmployee((p) => ({ ...p, name: e.target.value }))}
                         placeholder="Etunimi Sukunimi"
                       />
                     </div>
@@ -293,58 +281,51 @@ const departments = useMemo(
                         id="email"
                         type="email"
                         value={newEmployee.email}
-                        onChange={(e) =>
-                          setNewEmployee((p) => ({ ...p, email: e.target.value }))
-                        }
+                        onChange={(e) => setNewEmployee((p) => ({ ...p, email: e.target.value }))}
                         placeholder="etunimi.sukunimi@company.com"
                       />
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="department">Osasto *</Label>
                       <Select
-  value={
-    creatingNewDept
-      ? "NEW_DEPT"
-      : (newEmployee.department || "")
-  }
-  onValueChange={(value) => {
-    if (value === "NEW_DEPT") {
-      setCreatingNewDept(true);
-      setCustomDepartment("");
-      setNewEmployee(p => ({ ...p, department: "" })); // puhdas aloitus
-    } else {
-      setCreatingNewDept(false);
-      setCustomDepartment("");
-      setNewEmployee(p => ({ ...p, department: value }));
-    }
-  }}
->
-  <SelectTrigger>
-    <SelectValue placeholder="Valitse osasto" />
-  </SelectTrigger>
-  <SelectContent>
-    {departments.map((dept) => (
-      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-    ))}
-    <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
-  </SelectContent>
-</Select>
+                        value={creatingNewDept ? "NEW_DEPT" : newEmployee.department || ""}
+                        onValueChange={(value) => {
+                          if (value === "NEW_DEPT") {
+                            setCreatingNewDept(true);
+                            setCustomDepartment("");
+                            setNewEmployee((p) => ({ ...p, department: "" })); // puhdas aloitus
+                          } else {
+                            setCreatingNewDept(false);
+                            setCustomDepartment("");
+                            setNewEmployee((p) => ({ ...p, department: value }));
+                          }
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Valitse osasto" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {departments.map((dept) => (
+                            <SelectItem key={dept} value={dept}>
+                              {dept}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
+                        </SelectContent>
+                      </Select>
 
-{creatingNewDept && (
-  <Input
-    placeholder="Kirjoita uusi osasto…"
-    className="mt-2"
-    value={customDepartment}
-    onChange={(e) => {
-      const v = e.target.value;
-      setCustomDepartment(v);
-      setNewEmployee(p => ({ ...p, department: v })); // päivitetään arvo, mutta ei piiloteta inputtia
-    }}
-  />
-)}
-
-
-
+                      {creatingNewDept && (
+                        <Input
+                          placeholder="Kirjoita uusi osasto…"
+                          className="mt-2"
+                          value={customDepartment}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setCustomDepartment(v);
+                            setNewEmployee((p) => ({ ...p, department: v })); // päivitetään arvo, mutta ei piiloteta inputtia
+                          }}
+                        />
+                      )}
                     </div>
                     <div className="flex items-center space-x-2">
                       <Switch
@@ -448,7 +429,10 @@ const departments = useMemo(
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex items-center space-x-2">
-                        <Label htmlFor={`toggle-${employee.id}`} className="text-sm text-muted-foreground">
+                        <Label
+                          htmlFor={`toggle-${employee.id}`}
+                          className="text-sm text-muted-foreground"
+                        >
                           Aktiivinen
                         </Label>
                         <Switch
@@ -457,7 +441,11 @@ const departments = useMemo(
                           onCheckedChange={() => handleToggleActive(employee.id)}
                         />
                       </div>
-                      <Button variant="ghost" size="sm" onClick={() => handleEditEmployee(employee)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleEditEmployee(employee)}
+                      >
                         <Edit3 className="w-4 h-4" />
                       </Button>
                       <Button
@@ -516,50 +504,46 @@ const departments = useMemo(
               <div className="space-y-2">
                 <Label htmlFor="edit-department">Osasto</Label>
 
-<Select
-  value={
-    editCreatingNewDept
-      ? "NEW_DEPT"
-      : (selectedEmployee?.department || "")
-  }
-  onValueChange={(value) => {
-    if (!selectedEmployee) return;
-    if (value === "NEW_DEPT") {
-      setEditCreatingNewDept(true);
-      setEditCustomDepartment("");
-      setSelectedEmployee(p => p ? { ...p, department: "" } : p);
-    } else {
-      setEditCreatingNewDept(false);
-      setEditCustomDepartment("");
-      setSelectedEmployee(p => p ? { ...p, department: value } : p);
-    }
-  }}
->
-  <SelectTrigger>
-    <SelectValue placeholder="Valitse osasto" />
-  </SelectTrigger>
-  <SelectContent>
-    {departments.map((dept) => (
-      <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-    ))}
-    <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
-  </SelectContent>
-</Select>
+                <Select
+                  value={editCreatingNewDept ? "NEW_DEPT" : selectedEmployee?.department || ""}
+                  onValueChange={(value) => {
+                    if (!selectedEmployee) return;
+                    if (value === "NEW_DEPT") {
+                      setEditCreatingNewDept(true);
+                      setEditCustomDepartment("");
+                      setSelectedEmployee((p) => (p ? { ...p, department: "" } : p));
+                    } else {
+                      setEditCreatingNewDept(false);
+                      setEditCustomDepartment("");
+                      setSelectedEmployee((p) => (p ? { ...p, department: value } : p));
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Valitse osasto" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.map((dept) => (
+                      <SelectItem key={dept} value={dept}>
+                        {dept}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="NEW_DEPT">+ Uusi osasto…</SelectItem>
+                  </SelectContent>
+                </Select>
 
-{editCreatingNewDept && (
-  <Input
-    placeholder="Kirjoita uusi osasto…"
-    className="mt-2"
-    value={editCustomDepartment}
-    onChange={(e) => {
-      const v = e.target.value;
-      setEditCustomDepartment(v);
-      setSelectedEmployee(p => p ? { ...p, department: v } : p);
-    }}
-  />
-)}
-
-
+                {editCreatingNewDept && (
+                  <Input
+                    placeholder="Kirjoita uusi osasto…"
+                    className="mt-2"
+                    value={editCustomDepartment}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setEditCustomDepartment(v);
+                      setSelectedEmployee((p) => (p ? { ...p, department: v } : p));
+                    }}
+                  />
+                )}
               </div>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -575,7 +559,11 @@ const departments = useMemo(
                 <Button onClick={handleUpdateEmployee} className="flex-1">
                   Tallenna muutokset
                 </Button>
-                <Button variant="outline" onClick={() => setSelectedEmployee(null)} className="flex-1">
+                <Button
+                  variant="outline"
+                  onClick={() => setSelectedEmployee(null)}
+                  className="flex-1"
+                >
                   Peruuta
                 </Button>
               </div>
@@ -599,8 +587,12 @@ const departments = useMemo(
                 return (
                   <div key={department} className="text-center p-3 border border-border rounded-lg">
                     <h4 className="font-medium mb-2">{department}</h4>
-                    <div className="text-2xl font-bold text-primary">{activeDeptEmployees.length}</div>
-                    <div className="text-xs text-muted-foreground">{deptEmployees.length} yhteensä</div>
+                    <div className="text-2xl font-bold text-primary">
+                      {activeDeptEmployees.length}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {deptEmployees.length} yhteensä
+                    </div>
                   </div>
                 );
               });

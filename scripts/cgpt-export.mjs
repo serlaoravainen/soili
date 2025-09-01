@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import fg from "fast-glob";
+import prettier from "prettier";
 
 const root = process.cwd();
 const cfgPath = path.join(root, "cgpt.config.json");
@@ -138,11 +139,55 @@ console.log(
   `Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`
 );
 
-// WRITE PER-FILE DUMPS (THIS IS WHAT WAS MISSING)
+// ---------- format helper for dumps (optional, controlled by cfg.formatDump) ----------
+function formatForDump(text, filePath, enabled) {
+  if (!enabled) return text;
+  const ext = filePath.toLowerCase();
+  let parser = null;
+  if (ext.endsWith(".tsx") || ext.endsWith(".ts")) parser = "babel-ts";
+  else if (ext.endsWith(".jsx") || ext.endsWith(".js")) parser = "babel";
+  else if (ext.endsWith(".json")) parser = "json";
+  else if (ext.endsWith(".css") || ext.endsWith(".scss") || ext.endsWith(".less")) parser = "css";
+  else if (ext.endsWith(".html")) parser = "html";
+  else if (ext.endsWith(".md")) parser = "markdown";
+  if (!parser) return text;
+  try {
+    return prettier.format(text, { parser, printWidth: 100 });
+  } catch (e) {
+    console.warn(`Prettier failed for ${filePath}: ${e.message}`);
+    return text;
+  }
+}
+
+// WRITE PER-FILE DUMPS (formatted if cfg.formatDump === true)
 const filesRoot = path.join("chatgpt-export", "files");
 for (const f of manifest.files) {
-  const fullText = (f.chunks || []).map((c) => c.text || "").join("");
-  const dest = path.join(filesRoot, f.path); // mirrors original path under files/
+  const fullTextRaw = (f.chunks || []).map((c) => c.text || "").join("");
+  let fullText = fullTextRaw;
+  if (cfg.formatDump === true) {
+    try {
+      // prettier.format on asynkroninen → odota
+      fullText = await prettier.format(fullTextRaw, {
+        parser: f.path.endsWith(".tsx") || f.path.endsWith(".ts")
+          ? "babel-ts"
+          : f.path.endsWith(".jsx") || f.path.endsWith(".js")
+          ? "babel"
+          : f.path.endsWith(".json")
+          ? "json"
+          : f.path.endsWith(".css") || f.path.endsWith(".scss") || f.path.endsWith(".less")
+          ? "css"
+          : f.path.endsWith(".html")
+          ? "html"
+          : f.path.endsWith(".md")
+          ? "markdown"
+          : null,
+        printWidth: 100,
+      });
+    } catch (e) {
+      console.warn(`Prettier failed for ${f.path}: ${e.message}`);
+    }
+  }
+  const dest = path.join(filesRoot, f.path);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, fullText, "utf8");
 }

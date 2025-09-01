@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2025-09-01T01:17:51.130Z",
+  "generatedAt": "2025-09-01T01:50:30.324Z",
   "root": "soili",
   "counts": {
-    "files": 30,
-    "bytes": 148506,
+    "files": 29,
+    "bytes": 143611,
     "skipped": 0
   },
   "config": {
@@ -35,7 +35,8 @@
       "**/*.pdf",
       "**/*.zip",
       "supabase/.branches/**",
-      "supabase/.temp/**"
+      "supabase/.temp/**",
+      "scripts/**"
     ],
     "redact": [
       "(?i)api[_-]?key\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
@@ -45,7 +46,8 @@
     ],
     "maxPreviewBytes": 250000,
     "chunkBytes": 64000,
-    "maxFileBytes": 1500000
+    "maxFileBytes": 1500000,
+    "formatDump": true
   },
   "files": [
     {
@@ -393,18 +395,6 @@
         {
           "i": 0,
           "text": "import { clsx, type ClassValue } from \"clsx\";\r\nimport { twMerge } from \"tailwind-merge\";\r\n\r\nexport function cn(...inputs: ClassValue[]) {\r\n  return twMerge(clsx(inputs));\r\n}\r\n"
-        }
-      ]
-    },
-    {
-      "path": "scripts/cgpt-export.mjs",
-      "size": 4895,
-      "sha256": "633d6aba7b8659144ea66d455810faaf99e627904d16054154198b9ff6d9e2a0",
-      "lang": "javascript",
-      "chunks": [
-        {
-          "i": 0,
-          "text": "import fs from \"fs\";\r\nimport path from \"path\";\r\nimport crypto from \"crypto\";\r\nimport fg from \"fast-glob\";\r\n\r\nconst root = process.cwd();\r\nconst cfgPath = path.join(root, \"cgpt.config.json\");\r\nif (!fs.existsSync(cfgPath)) {\r\n  console.error(\"Missing cgpt.config.json at project root.\");\r\n  process.exit(1);\r\n}\r\nconst cfg = JSON.parse(fs.readFileSync(cfgPath, \"utf8\"));\r\n\r\nconst detectLang = (rel) => {\r\n  const ext = rel.split(\".\").pop()?.toLowerCase();\r\n  const map = {\r\n    ts: \"typescript\", tsx: \"tsx\", js: \"javascript\", jsx: \"jsx\",\r\n    mjs: \"javascript\", cjs: \"javascript\",\r\n    css: \"css\", scss: \"scss\", sass: \"sass\", less: \"less\",\r\n    html: \"html\", md: \"markdown\", json: \"json\", yml: \"yaml\", yaml: \"yaml\",\r\n    go: \"go\", rs: \"rust\", py: \"python\", java: \"java\", cs: \"csharp\",\r\n    php: \"php\", rb: \"ruby\", kt: \"kotlin\", swift: \"swift\", cpp: \"cpp\", c: \"c\"\r\n  };\r\n  return map[ext] || ext || \"text\";\r\n};\r\n\r\n// Build a JS RegExp from a pattern that may start with PCRE-style inline flags, e.g. (?i)(?m)...\r\nfunction makeRegex(pattern) {\r\n  let src = String(pattern);\r\n  let flags = \"g\"; // we always want global\r\n  // Collect inline flags like (?i), (?m), (?im)...\r\n  // Support one or multiple flag groups at the very start.\r\n  const inline = src.match(/^(\\(\\?[a-zA-Z]+\\))+?/);\r\n  if (inline) {\r\n    // Extract flags from all groups at the start\r\n    const all = inline[0];\r\n    const flagSets = [...all.matchAll(/\\(\\?([a-zA-Z]+)\\)/g)].map(m => m[1]);\r\n    const flat = [...new Set(flagSets.join(\"\").split(\"\"))];\r\n    if (flat.includes(\"i\")) flags += \"i\";\r\n    if (flat.includes(\"m\")) flags += \"m\";\r\n    // strip the inline flag groups from the source\r\n    src = src.slice(all.length);\r\n  }\r\n  try {\r\n    return new RegExp(src, flags);\r\n  } catch (e) {\r\n    console.warn(`Redact pattern invalid, skipping: ${pattern} → ${e.message}`);\r\n    return null;\r\n  }\r\n}\r\n\r\nconst redactFn = (text, patterns) => {\r\n  let out = text;\r\n  for (const p of (patterns || [])) {\r\n    const re = makeRegex(p);\r\n    if (!re) continue;\r\n    out = out.replace(re, \"[REDACTED]\");\r\n  }\r\n  return out;\r\n};\r\n\r\nconst isProbablyBinary = (buf) => {\r\n  const len = Math.min(buf.length, 1024);\r\n  for (let i = 0; i < len; i++) if (buf[i] === 0) return true;\r\n  return false;\r\n};\r\n\r\nconst include = cfg.include?.length ? cfg.include : [\"src/**/*\"];\r\nconst exclude = cfg.exclude || [];\r\nconst entries = await fg(include, {\r\n  cwd: root,\r\n  dot: false,\r\n  ignore: exclude,\r\n  onlyFiles: true,\r\n  followSymbolicLinks: false\r\n});\r\n\r\nconst manifest = {\r\n  generatedAt: new Date().toISOString(),\r\n  root: path.basename(root),\r\n  counts: { files: 0, bytes: 0, skipped: 0 },\r\n  config: { ...cfg },\r\n  files: []\r\n};\r\n\r\nfor (const rel of entries) {\r\n  const abs = path.join(root, rel);\r\n  let buf;\r\n  try {\r\n    buf = fs.readFileSync(abs);\r\n  } catch {\r\n    manifest.counts.skipped++;\r\n    continue;\r\n  }\r\n\r\n  const size = buf.length;\r\n  if (cfg.maxFileBytes && size > cfg.maxFileBytes) {\r\n    manifest.counts.skipped++;\r\n    continue;\r\n  }\r\n  if (isProbablyBinary(buf)) {\r\n    manifest.counts.skipped++;\r\n    continue;\r\n  }\r\n\r\n  const content = buf.toString(\"utf8\");\r\n  const sha = crypto.createHash(\"sha256\").update(content).digest(\"hex\");\r\n  const lang = detectLang(rel);\r\n\r\n  const chunks = [];\r\n  if (size <= (cfg.maxPreviewBytes || 250000)) {\r\n    chunks.push({ i: 0, text: redactFn(content, cfg.redact) });\r\n  } else {\r\n    const step = cfg.chunkBytes || 64000;\r\n    for (let i = 0; i < content.length; i += step) {\r\n      const slice = content.slice(i, i + step);\r\n      chunks.push({ i: Math.floor(i / step), text: redactFn(slice, cfg.redact) });\r\n    }\r\n  }\r\n\r\n  manifest.files.push({\r\n    path: rel.replace(/\\\\/g, \"/\"),\r\n    size,\r\n    sha256: sha,\r\n    lang,\r\n    chunks\r\n  });\r\n\r\n  manifest.counts.files++;\r\n  manifest.counts.bytes += size;\r\n}\r\n\r\n// WRITE JSON\r\nfs.mkdirSync(\"chatgpt-export\", { recursive: true });\r\nconst outPath = \"chatgpt-export/code-index.json\";\r\nfs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), \"utf8\");\r\nconsole.log(\r\n  `Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`\r\n);\r\n\r\n// WRITE PER-FILE DUMPS (THIS IS WHAT WAS MISSING)\r\nconst filesRoot = path.join(\"chatgpt-export\", \"files\");\r\nfor (const f of manifest.files) {\r\n  const fullText = (f.chunks || []).map((c) => c.text || \"\").join(\"\");\r\n  const dest = path.join(filesRoot, f.path); // mirrors original path under files/\r\n  fs.mkdirSync(path.dirname(dest), { recursive: true });\r\n  fs.writeFileSync(dest, fullText, \"utf8\");\r\n}\r\nconsole.log(`Also wrote per-file dumps under ${filesRoot}/**`);\r\n\r\n// Optional: tiny directory summary\r\nconst byDir = {};\r\nfor (const f of manifest.files) {\r\n  const dir = f.path.split(\"/\").slice(0, 3).join(\"/\"); // e.g., src/app/components\r\n  byDir[dir] = (byDir[dir] || 0) + 1;\r\n}\r\nconsole.log(\"Collected by dir:\", byDir);\r\n"
         }
       ]
     }

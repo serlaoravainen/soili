@@ -1,26 +1,26 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
-import { Toaster } from './components/ui/sonner';
-import Toolbar from './components/Toolbar';
-import ScheduleTable from './components/ScheduleTable';
-import AbsenceControlPanel from './components/AbsenceControlPanel';
-import EmployeeList from './components/EmployeeList';
-import { Calendar, Users, Clock } from 'lucide-react';
+import React, { useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import { Toaster } from "./components/ui/sonner";
+import Toolbar from "./components/Toolbar";
+import ScheduleTable from "./components/ScheduleTable";
+import AbsenceControlPanel from "./components/AbsenceControlPanel";
+import EmployeeList from "./components/EmployeeList";
+import { Calendar, Users, Clock } from "lucide-react";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('schedule');
+  const [activeTab, setActiveTab] = useState("schedule");
 
   return (
     <div className="min-h-screen bg-background">
       {/* Toast notifications */}
       <Toaster position="top-right" />
-      
+
       <div className="container mx-auto p-6 space-y-6">
         {/* Toolbar - always visible */}
         <Toolbar />
-        
+
         {/* Main Navigation */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-3 lg:w-[400px] mx-auto">

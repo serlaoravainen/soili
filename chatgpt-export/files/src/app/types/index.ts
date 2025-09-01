@@ -1,5 +1,5 @@
 export interface ShiftType {
-  type: 'normal' | 'locked' | 'absent' | 'holiday' | 'empty';
+  type: "normal" | "locked" | "absent" | "holiday" | "empty";
   hours?: number;
   icon?: React.ReactNode;
 }
@@ -20,7 +20,7 @@ export interface AbsenceRequest {
   startDate: string;
   endDate: string;
   reason: string;
-  status: 'pending' | 'approved' | 'declined';
+  status: "pending" | "approved" | "declined";
   submittedAt: string;
   message?: string;
 }
