@@ -12,67 +12,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pg client + dnsutils
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y postgresql-client dnsutils
+      - name: Install pg client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      - name: Dump schema (force IPv4 + TLS)
+      - name: Dump schema via Session Pooler (IPv4 + TLS)
         env:
           DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           set -euo pipefail
           mkdir -p supabase
 
-          # 0) Secret-check
           if [ -z "${DB_URL:-}" ]; then
-            echo "FATAL: SUPABASE_DB_URL secret puuttuu"; exit 2
-          fi
-          echo "Secret OK (maskattu)."
-
-          # 1) Host (sama kuin DB_URL:ssa)
-          HOST="db.musrmpblsazxcrhwthtc.supabase.co"
-          echo "Host: $HOST"
-
-          # 2) IPv4-pakotus — SUOJA pipefaililta
-          set +o pipefail
-          IP=$(getent ahostsv4 "$HOST" 2>/dev/null | awk 'NR==1{print $1}') || true
-          set -o pipefail
-
-          if [ -z "${IP:-}" ]; then
-            for RES in 1.1.1.1 8.8.8.8 9.9.9.9; do
-              CAND=$(dig +time=2 +tries=1 +short A "$HOST" @"$RES" | head -n1 || true)
-              if [ -n "$CAND" ]; then IP="$CAND"; break; fi
-            done
+            echo "FATAL: SUPABASE_DB_URL puuttuu"; exit 2
           fi
 
-          if [ -z "${IP:-}" ]; then
-            echo "FATAL: ei saatu IPv4-osoitetta $HOST:lle (A-record puuttuu tai DNS-ongelma)"; exit 2
-          fi
-
-          echo "Using IPv4: $IP"
-          export PGHOSTADDR="$IP"
-          export PGSSLMODE="require"
-
-          # 3) Rakenna URL: sslmode=require + hostaddr=<IPv4>
+          # Varmista sslmode=require
           URL_TLS="$DB_URL"
           case "$URL_TLS" in
             *sslmode=*) : ;;
             *\?*) URL_TLS="$URL_TLS&sslmode=require" ;;
             *)    URL_TLS="$URL_TLS?sslmode=require" ;;
           esac
-          case "$URL_TLS" in
-            *hostaddr=*) : ;;
-            *\?*) URL_TLS="$URL_TLS&hostaddr=$IP" ;;
-            *)    URL_TLS="$URL_TLS?hostaddr=$IP" ;;
-          esac
 
-          # 4) Savutesti
-          psql --version
+          echo "Testing connection..."
           PGCONNECT_TIMEOUT=10 psql -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS"
           echo "Connection OK."
 
-          # 5) Skeemadumppi
+          echo "Dumping schema..."
           pg_dump \
             -s --no-owner --no-privileges \
             -N pg_catalog -N information_schema -N pg_toast -N extensions \
