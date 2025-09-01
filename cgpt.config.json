@@ -22,7 +22,8 @@
     "**/*.pdf",
     "**/*.zip",
     "supabase/.branches/**",
-    "supabase/.temp/**"
+    "supabase/.temp/**",
+    "scripts/**"
   ],
 "redact": [
   "(?i)api[_-]?key\\s*[:=]\\s*['\\\"][^'\\\"]+['\\\"]",
@@ -32,5 +33,6 @@
 ],
   "maxPreviewBytes": 250000,
   "chunkBytes": 64000,
-  "maxFileBytes": 1500000
+  "maxFileBytes": 1500000,
+  "formatDump": true
 }

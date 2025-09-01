@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import fg from "fast-glob";
+import prettier from "prettier";
 
 const root = process.cwd();
 const cfgPath = path.join(root, "cgpt.config.json");
@@ -24,34 +25,42 @@ const detectLang = (rel) => {
   return map[ext] || ext || "text";
 };
 
-// Build a JS RegExp from a pattern that may start with inline flags like (?i)(?m)
-const buildRegex = (raw) => {
-  let pattern = raw;
-  let flags = "g"; // always global replace
-
-  // support a leading group of inline flags like (?im)
-  const m = pattern.match(/^\(\?[im]+\)/);
-  if (m) {
-    if (m[0].includes("i")) flags += "i";
-    if (m[0].includes("m")) flags += "m";
-    pattern = pattern.slice(m[0].length);
+// Build a JS RegExp from a pattern that may start with PCRE-style inline flags, e.g. (?i)(?m)...
+function makeRegex(pattern) {
+  let src = String(pattern);
+  let flags = "g"; // we always want global
+  // Collect inline flags like (?i), (?m), (?im)...
+  // Support one or multiple flag groups at the very start.
+  const inline = src.match(/^(\(\?[a-zA-Z]+\))+?/);
+  if (inline) {
+    // Extract flags from all groups at the start
+    const all = inline[0];
+    const flagSets = [...all.matchAll(/\(\?([a-zA-Z]+)\)/g)].map(m => m[1]);
+    const flat = [...new Set(flagSets.join("").split(""))];
+    if (flat.includes("i")) flags += "i";
+    if (flat.includes("m")) flags += "m";
+    // strip the inline flag groups from the source
+    src = src.slice(all.length);
   }
-
-  return new RegExp(pattern, flags);
-};
+  try {
+    return new RegExp(src, flags);
+  } catch (e) {
+    console.warn(`Redact pattern invalid, skipping: ${pattern} → ${e.message}`);
+    return null;
+  }
+}
 
 const redactFn = (text, patterns) => {
   let out = text;
-  for (const p of patterns || []) {
-    const re = buildRegex(p);
+  for (const p of (patterns || [])) {
+    const re = makeRegex(p);
+    if (!re) continue;
     out = out.replace(re, "[REDACTED]");
   }
   return out;
 };
 
-
 const isProbablyBinary = (buf) => {
-  // yksinkertainen tarkistus: sisältääkö NULL-byttejä
   const len = Math.min(buf.length, 1024);
   for (let i = 0; i < len; i++) if (buf[i] === 0) return true;
   return false;
@@ -78,11 +87,22 @@ const manifest = {
 for (const rel of entries) {
   const abs = path.join(root, rel);
   let buf;
-  try { buf = fs.readFileSync(abs); } catch { manifest.counts.skipped++; continue; }
+  try {
+    buf = fs.readFileSync(abs);
+  } catch {
+    manifest.counts.skipped++;
+    continue;
+  }
 
   const size = buf.length;
-  if (cfg.maxFileBytes && size > cfg.maxFileBytes) { manifest.counts.skipped++; continue; }
-  if (isProbablyBinary(buf)) { manifest.counts.skipped++; continue; }
+  if (cfg.maxFileBytes && size > cfg.maxFileBytes) {
+    manifest.counts.skipped++;
+    continue;
+  }
+  if (isProbablyBinary(buf)) {
+    manifest.counts.skipped++;
+    continue;
+  }
 
   const content = buf.toString("utf8");
   const sha = crypto.createHash("sha256").update(content).digest("hex");
@@ -111,7 +131,72 @@ for (const rel of entries) {
   manifest.counts.bytes += size;
 }
 
+// WRITE JSON
 fs.mkdirSync("chatgpt-export", { recursive: true });
 const outPath = "chatgpt-export/code-index.json";
 fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), "utf8");
-console.log(`Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`);
+console.log(
+  `Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`
+);
+
+// ---------- format helper for dumps (optional, controlled by cfg.formatDump) ----------
+function formatForDump(text, filePath, enabled) {
+  if (!enabled) return text;
+  const ext = filePath.toLowerCase();
+  let parser = null;
+  if (ext.endsWith(".tsx") || ext.endsWith(".ts")) parser = "babel-ts";
+  else if (ext.endsWith(".jsx") || ext.endsWith(".js")) parser = "babel";
+  else if (ext.endsWith(".json")) parser = "json";
+  else if (ext.endsWith(".css") || ext.endsWith(".scss") || ext.endsWith(".less")) parser = "css";
+  else if (ext.endsWith(".html")) parser = "html";
+  else if (ext.endsWith(".md")) parser = "markdown";
+  if (!parser) return text;
+  try {
+    return prettier.format(text, { parser, printWidth: 100 });
+  } catch (e) {
+    console.warn(`Prettier failed for ${filePath}: ${e.message}`);
+    return text;
+  }
+}
+
+// WRITE PER-FILE DUMPS (formatted if cfg.formatDump === true)
+const filesRoot = path.join("chatgpt-export", "files");
+for (const f of manifest.files) {
+  const fullTextRaw = (f.chunks || []).map((c) => c.text || "").join("");
+  let fullText = fullTextRaw;
+  if (cfg.formatDump === true) {
+    try {
+      // prettier.format on asynkroninen → odota
+      fullText = await prettier.format(fullTextRaw, {
+        parser: f.path.endsWith(".tsx") || f.path.endsWith(".ts")
+          ? "babel-ts"
+          : f.path.endsWith(".jsx") || f.path.endsWith(".js")
+          ? "babel"
+          : f.path.endsWith(".json")
+          ? "json"
+          : f.path.endsWith(".css") || f.path.endsWith(".scss") || f.path.endsWith(".less")
+          ? "css"
+          : f.path.endsWith(".html")
+          ? "html"
+          : f.path.endsWith(".md")
+          ? "markdown"
+          : null,
+        printWidth: 100,
+      });
+    } catch (e) {
+      console.warn(`Prettier failed for ${f.path}: ${e.message}`);
+    }
+  }
+  const dest = path.join(filesRoot, f.path);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, fullText, "utf8");
+}
+console.log(`Also wrote per-file dumps under ${filesRoot}/**`);
+
+// Optional: tiny directory summary
+const byDir = {};
+for (const f of manifest.files) {
+  const dir = f.path.split("/").slice(0, 3).join("/"); // e.g., src/app/components
+  byDir[dir] = (byDir[dir] || 0) + 1;
+}
+console.log("Collected by dir:", byDir);
