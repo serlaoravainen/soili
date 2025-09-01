@@ -29,6 +29,8 @@ jobs:
         run: npm ci || npm i
 
       - name: Build export JSON
+        env:
+          EXPORT_RAW_BASE: https://raw.githubusercontent.com/${{ github.event.inputs.export_repo }}/main/files
         run: npm run cgpt:export
 
       # UUSI: tulosta export-puun sisältö

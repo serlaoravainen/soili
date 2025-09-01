@@ -135,12 +135,21 @@ function getRemoteHttps() {
   return null;
 }
 const remoteHttps = getRemoteHttps();
+  function makeRawUrl(relPath) {
+  // 1) ENV (workflow asettaa tämän export-repoon): e.g.
+  //    https://raw.githubusercontent.com/<owner>/<export-repo>/main/files
+  const envBase = process.env.EXPORT_RAW_BASE && process.env.EXPORT_RAW_BASE.replace(/\/+$/, "");
+  if (envBase) {
+    return `${envBase}/${relPath.replace(/^\/+/, "")}`;
+  }
 
-function makeRawUrl(relPath) {
-  // Jos konfigissa annettu rawBase, käytä sitä. Muuten rakenna GitHubin raw-linkki jos mahdollista.
+  // 2) Konfigissa annettu rawBase (fallback lokaaliin tai manuaaliseen käyttöön)
   if (cfg.repoRawBase) {
     return `${cfg.repoRawBase.replace(/\/+$/,"")}/${relPath.replace(/^\/+/,"")}`;
   }
+
+  // 3) Fallback source-repoon (ei export-repoon) – vähemmän hyödyllinen meille,
+  //    mutta pidetään varalla, jos ajetaan skriptiä ilman workflow-ympäristöä.
   if (remoteHttps && repoSha) {
     // https://raw.githubusercontent.com/<owner>/<repo>/<sha>/<path>
     const m = remoteHttps.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/);
@@ -219,6 +228,7 @@ for (const rel of entries) {
   const content = buf.toString("utf8");
   const sha = crypto.createHash("sha256").update(content).digest("hex");
   const lang = detectLang(rel);
+  const commitSha = process.env.GITHUB_SHA || null;
 
   const step = cfg.chunkBytes || 64000;
   const rawChunks = (size <= (cfg.maxPreviewBytes || 250000))
