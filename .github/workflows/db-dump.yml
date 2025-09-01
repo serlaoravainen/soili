@@ -3,41 +3,40 @@ name: DB Schema Dump
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   dump:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install pg client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Dump schema (force IPv4 + TLS, no parsing)
-        env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres
+      # Asenna nimenomaan Postgres 17 -clientit PGDG-reposta
+      - name: Install PostgreSQL 17 client (psql/pg_dump)
         run: |
-          set -eo pipefail
+          set -euo pipefail
+          echo "Adding PGDG repo…"
+          source /etc/os-release
+          echo "deb http://apt.postgresql.org/pub/repos/apt ${UBUNTU_CODENAME}-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo tee /etc/apt/trusted.gpg.d/postgresql.asc >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-17
+          /usr/lib/postgresql/17/bin/psql    --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Dump schema via Session Pooler (IPv4 + TLS)
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}  # esim: postgresql://postgres.<REF>:<PWD>@aws-1-eu-north-1.pooler.supabase.com:5432/postgres?sslmode=require
+        run: |
+          set -euo pipefail
           mkdir -p supabase
 
-          # 0) Secret-check
           if [ -z "${DB_URL:-}" ]; then
-            echo "FATAL: SUPABASE_DB_URL secret puuttuu"; exit 2
+            echo "FATAL: SUPABASE_DB_URL puuttuu"; exit 2
           fi
-          echo "Secret OK (maskattu)."
 
-          # 1) KOVA HOST → ei parsintaa
-          HOST="db.musrmpblsazxcrhwthtc.supabase.co"
-
-          # 2) IPv4 pakotus + TLS
-          IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
-          if [ -z "${IP:-}" ]; then
-            echo "FATAL: IPv4 lookup failed for $HOST"; exit 2
-          fi
-          echo "Using IPv4: $IP"
-          export PGHOSTADDR="$IP"
-          export PGSSLMODE="require"
-
-          # 3) Lisää sslmode=require URL:iin jos puuttuu
+          # Pakota TLS parametri varmuuden vuoksi
           URL_TLS="$DB_URL"
           case "$URL_TLS" in
             *sslmode=*) : ;;
@@ -45,18 +44,28 @@ jobs:
             *)    URL_TLS="$URL_TLS?sslmode=require" ;;
           esac
 
-          # 4) Savutesti – failaa heti jos yhteys ei toimi
-          psql --version
-          PGCONNECT_TIMEOUT=10 psql -Atqc "select current_user, current_database();" "$URL_TLS"
+          PSQL=/usr/lib/postgresql/17/bin/psql
+          PGDUMP=/usr/lib/postgresql/17/bin/pg_dump
 
-          # 5) Skeemadumppi (system-skeemat pois)
-          pg_dump -s -N extensions -N pg_catalog -N information_schema "$URL_TLS" > supabase/schema.sql
+          echo "Testing connection with psql 17…"
+          PGCONNECT_TIMEOUT=10 "$PSQL" -v ON_ERROR_STOP=1 -Atqc "select current_user, current_database();" "$URL_TLS"
+          echo "Connection OK."
+
+          echo "Dumping schema with pg_dump 17…"
+          "$PGDUMP" \
+            -s --no-owner --no-privileges \
+            -N pg_catalog -N information_schema -N pg_toast -N extensions \
+            "$URL_TLS" > supabase/schema.sql
 
           echo "---- schema.sql head ----"
-          head -n 30 supabase/schema.sql || true
+          head -n 40 supabase/schema.sql || true
+          echo "Schema dump OK ($(wc -l < supabase/schema.sql) riviä)."
 
-      - name: Commit dump
+      - name: Commit & push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           git config user.name "schema-bot"
           git config user.email "bot@example.com"
           git add supabase/schema.sql
