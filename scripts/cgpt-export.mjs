@@ -115,3 +115,12 @@ fs.mkdirSync("chatgpt-export", { recursive: true });
 const outPath = "chatgpt-export/code-index.json";
 fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), "utf8");
 console.log(`Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`);
+
+// NEW: dumpataan jokainen tiedosto erikseen, jotta se on luettavissa raw.githubusercontent.comin kautta
+for (const f of manifest.files) {
+  const fullText = (f.chunks || []).map(c => c.text || "").join("");
+  const destPath = path.join("chatgpt-export", "files", f.path);
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  fs.writeFileSync(destPath, fullText, "utf8");
+}
+console.log(`Also wrote per-file dumps under chatgpt-export/files/**`);

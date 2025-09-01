@@ -41,7 +41,7 @@ jobs:
           git init
           git config user.name "cgpt-export-bot"
           git config user.email "bot@example.com"
-          git add code-index.json
+          git add -A
           git commit -m "export: ${SRC_REPO}@${SRC_SHA}"
           git branch -M main
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${EXPORT_REPO}.git"
