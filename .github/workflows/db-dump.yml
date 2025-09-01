@@ -1,0 +1,23 @@
+name: DB Schema Dump
+on:
+  workflow_dispatch: {}
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pg_dump
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Dump schema
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          mkdir -p supabase
+          pg_dump -s -N extensions -N pg_catalog -N information_schema "$DB_URL" > supabase/schema.sql
+      - name: Commit dump
+        run: |
+          git config user.name "schema-bot"
+          git config user.email "bot@example.com"
+          git add supabase/schema.sql
+          git commit -m "db: update schema.sql" || echo "No changes"
+          git push
