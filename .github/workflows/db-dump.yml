@@ -12,57 +12,40 @@ jobs:
       - name: Install pg_dump
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      # Robust: parsii URL:n, pakottaa IPv4:n, käyttää TLS:ää
-      - name: Dump schema (parse URL + force IPv4 + TLS)
+      - name: Dump schema (force IPv4 + TLS, no python)
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          # Esim: postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres?sslmode=require
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }} # esim. postgresql://postgres:<PWD>@db.musrmpblsazxcrhwthtc.supabase.co:5432/postgres
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
           mkdir -p supabase
 
-          # --- parse DB_URL turvallisesti Pythonilla ---
-          read -r USER PASS HOST PORT DB SSL <<EOF
-          $(python3 - <<'PY'
-          import os, urllib.parse
-          u=os.environ['DB_URL']
-          p=urllib.parse.urlparse(u)
-          q=dict(urllib.parse.parse_qsl(p.query))
-          print(
-            (urllib.parse.unquote_plus(p.username or "")) or "",
-            (urllib.parse.unquote_plus(p.password or "")) or "",
-            p.hostname or "",
-            str(p.port or 5432),
-            (p.path.lstrip("/") or "postgres"),
-            (q.get("sslmode","require")),
-          )
-          PY
-          )
-          EOF
-
-          if [ -z "$HOST" ] || [ -z "$USER" ] || [ -z "$DB" ]; then
-            echo "FATAL: URL parse failed. Check SUPABASE_DB_URL secret."; exit 2
+          # 0) Tarkista että secret on olemassa
+          if [ -z "${DB_URL:-}" ]; then
+            echo "FATAL: SUPABASE_DB_URL secret puuttuu"; exit 2
           fi
 
-          # --- pakota IPv4 ---
+          # 1) IPv4 Supabase-hostille
+          HOST="db.musrmpblsazxcrhwthtc.supabase.co"
           IP=$(getent ahostsv4 "$HOST" | awk '{print $1; exit}')
           if [ -z "${IP:-}" ]; then
-            echo "FATAL: Could not resolve IPv4 for $HOST"; exit 2
+            echo "FATAL: IPv4 lookup failed for $HOST"; exit 2
           fi
           echo "Using IPv4: $IP"
 
-          # --- libpq env: host SNI:lle, hostaddr IPv4:lle ---
-          export PGHOST="$HOST"
-          export PGHOSTADDR="$IP"
-          export PGPORT="$PORT"
-          export PGUSER="$USER"
-          export PGPASSWORD="$PASS"
-          export PGDATABASE="$DB"
-          export PGSSLMODE="${SSL:-require}"
+          # 2) Varmista TLS (lisää ?sslmode=require jos puuttuu)
+          URL_TLS="$DB_URL"
+          case "$URL_TLS" in
+            *sslmode=*) : ;; # ok
+            *\?*) URL_TLS="$URL_TLS&sslmode=require" ;;
+            *)    URL_TLS="$URL_TLS?sslmode=require" ;;
+          esac
 
-          # --- skeema vain, siivoa system-skeemat ---
-          pg_dump -s -N extensions -N pg_catalog -N information_schema > supabase/schema.sql
+          # 3) Korvaa hostname -> IPv4 (pakottaa IPv4; TLS ok koska emme käytä verify-full)
+          URL_IPV4="${URL_TLS//$HOST/$IP}"
+
+          # 4) Dump skeema-only, ilman system-skeemoja
+          pg_dump -s -N extensions -N pg_catalog -N information_schema "$URL_IPV4" > supabase/schema.sql
 
           echo "---- schema.sql head ----"
           head -n 30 supabase/schema.sql || true
