@@ -42,7 +42,7 @@
   ],
   "maxPreviewBytes": 250000,
   "chunkBytes": 64000,
-  "maxFileBytes": 1500000,
+  "maxFileBytes": 3000000,
   "formatDump": true,
   "repoRawBase": "https://raw.githubusercontent.com/<owner>/<repo>/<commit>"
 }

@@ -302,39 +302,46 @@ function formatForDump(text, filePath, enabled) {
   }
 }
 
+function normalizeNewlines(s) {
+  return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
 // WRITE PER-FILE DUMPS (formatted if cfg.formatDump === true)
 const filesRoot = path.join("chatgpt-export", "files");
 for (const f of manifest.files) {
   const fullTextRaw = (f.chunks || []).map((c) => c.text || "").join("");
   let fullText = fullTextRaw;
-  // Prettier kaatuu redaktoituihin kenttiin kuten: process.env.[REDACTED]
-  // Jos sisältö on redaktoitu, skippaa formatointi.
   const isRedacted = fullTextRaw.includes("[REDACTED]");
-  // Ohita SQL-tiedostot: Prettieriltä puuttuu parseri ellei käytetä lisäpluginia
   const isSQL = f.path.toLowerCase().endsWith(".sql");
+
   if (cfg.formatDump === true && !isRedacted && !isSQL) {
     try {
-      // prettier.format on asynkroninen → odota
-      fullText = await prettier.format(fullTextRaw, {
-        parser: f.path.endsWith(".tsx") || f.path.endsWith(".ts")
-          ? "babel-ts"
-          : f.path.endsWith(".jsx") || f.path.endsWith(".js")
-          ? "babel"
-          : f.path.endsWith(".json")
-          ? "json"
-          : f.path.endsWith(".css") || f.path.endsWith(".scss") || f.path.endsWith(".less")
-          ? "css"
-          : f.path.endsWith(".html")
-          ? "html"
-          : f.path.endsWith(".md")
-          ? "markdown"
-          : null,
-        printWidth: 100,
-      });
+      const parser =
+        f.path.endsWith(".tsx") || f.path.endsWith(".ts") ? "babel-ts" :
+        f.path.endsWith(".jsx") || f.path.endsWith(".js") ? "babel" :
+        f.path.endsWith(".json") ? "json" :
+        f.path.endsWith(".css") || f.path.endsWith(".scss") || f.path.endsWith(".less") ? "css" :
+        f.path.endsWith(".html") ? "html" :
+        f.path.endsWith(".md") ? "markdown" : null;
+
+      if (parser) {
+        console.log(`[format] ${f.path} ← ${parser}`);
+        fullText = await prettier.format(fullTextRaw, { parser, printWidth: 100 });
+      }
     } catch (e) {
       console.warn(`Prettier failed for ${f.path}: ${e.message}`);
     }
   }
+  
+  fullText = normalizeNewlines(fullText);
+
+  // Debug: rivimäärä
+  try {
+    const before = (fullTextRaw.match(/\n/g) || []).length + 1;
+    const after = (fullText.match(/\n/g) || []).length + 1;
+    console.log(`[write] ${f.path}: ${after} lines (src had ${before})`);
+  } catch {}
+
   const dest = path.join(filesRoot, f.path);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, fullText, "utf8");
