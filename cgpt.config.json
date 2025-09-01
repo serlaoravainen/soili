@@ -1,5 +1,14 @@
 {
-  "include": ["src/**/*", "app/**/*", "packages/**/*", "scripts/**/*"],
+  "include": [
+    "src/**/*",
+    "app/**/*",
+    "packages/**/*",
+    "supabase/functions/**/*",
+    "supabase/migrations/**/*.sql",
+    "supabase/**/*.sql",
+    "supabase/seed.sql",
+    "supabase/types/**/*"
+  ],
   "exclude": [
     "**/node_modules/**",
     ".next/**",
@@ -23,6 +32,7 @@
     "**/*.zip",
     "supabase/.branches/**",
     "supabase/.temp/**",
+    "supabase/config.toml",
     "scripts/**"
   ],
   "redact": [
