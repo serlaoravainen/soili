@@ -300,7 +300,9 @@ for (const f of manifest.files) {
   // Prettier kaatuu redaktoituihin kenttiin kuten: process.env.[REDACTED]
   // Jos sisältö on redaktoitu, skippaa formatointi.
   const isRedacted = fullTextRaw.includes("[REDACTED]");
-  if (cfg.formatDump === true && !isRedacted) {
+  // Ohita SQL-tiedostot: Prettieriltä puuttuu parseri ellei käytetä lisäpluginia
+  const isSQL = f.path.toLowerCase().endsWith(".sql");
+  if (cfg.formatDump === true && !isRedacted && !isSQL) {
     try {
       // prettier.format on asynkroninen → odota
       fullText = await prettier.format(fullTextRaw, {
