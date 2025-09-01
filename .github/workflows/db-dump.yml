@@ -8,12 +8,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pg_dump
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Dump schema
+      - name: Dump schema (force IPv4 + TLS)
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+         DB_URL: ${{ secrets.SUPABASE_DB_URL }} # esim: postgresql://postgres:<PWD>@db.musrmp...:5432/postgres?sslmode=require
         run: |
-          mkdir -p supabase
-          pg_dump -s -N extensions -N pg_catalog -N information_schema "$DB_URL" > supabase/schema.sql
+         set -euo pipefail
+         mkdir -p supabase
+         IP=$(getent ahostsv4 db.musrmpblsazxcrhwthtc.supabase.co | awk '{print $1; exit}')
+         echo "Using IPv4: $IP"
+         export PGHOSTADDR="$IP"
+         export PGSSLMODE="require"
+         pg_dump -s -N extensions -N pg_catalog -N information_schema "$DB_URL" > supabase/schema.sql
+         head -n 20 supabase/schema.sql || true
+
       - name: Commit dump
         run: |
           git config user.name "schema-bot"
