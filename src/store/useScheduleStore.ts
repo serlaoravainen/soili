@@ -37,11 +37,15 @@ type PendingChange = {
   hours: number; // 0 => poista, >0 => upsert "normal"
 };
 
+type PendingMap = Record<string, PendingChange>; // key: emp|date
+type ShiftsMap = Record<string, ShiftRow>;
+
 type State = {
 
   // Hydratoitu perusdata
   employees: Employee[];
   dates: DateCell[];
+  
 
   // Vuorot mapattuna
   shiftsMap: Record<string, ShiftRow>;

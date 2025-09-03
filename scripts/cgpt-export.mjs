@@ -189,7 +189,7 @@ function annotateChunkLines(allText, lineIndex, chunk) {
   // Etsi chunkin alku- ja loppurivi byteOffsetin perusteella
   // (UTF-16 index, mutta riittää yhtenäiseksi indeksoinniksi UI-käyttöön)
   const startOff = chunk.byteOffset;
-  const endOff = chunk.byteOffset + chunk.text.length;
+  const endOff = Math.max(0, chunk.byteOffset + chunk.text.length - 1);
   // binäärihaku rivitaulukkoon
   const findLine = (off) => {
     let lo = 0, hi = lineIndex.length - 1, ans = 0;
@@ -225,7 +225,7 @@ for (const rel of entries) {
     continue;
   }
 
-  const content = buf.toString("utf8");
+  const content = buf.toString("utf8").replace(/\r\n/g, "\n");
   const sha = crypto.createHash("sha256").update(content).digest("hex");
   const lang = detectLang(rel);
   const commitSha = process.env.GITHUB_SHA || null;
@@ -282,25 +282,7 @@ console.log(
   `Exported ${manifest.counts.files} files (${manifest.counts.bytes} bytes), skipped ${manifest.counts.skipped} → ${outPath}`
 );
 
-// ---------- format helper for dumps (optional, controlled by cfg.formatDump) ----------
-function formatForDump(text, filePath, enabled) {
-  if (!enabled) return text;
-  const ext = filePath.toLowerCase();
-  let parser = null;
-  if (ext.endsWith(".tsx") || ext.endsWith(".ts")) parser = "babel-ts";
-  else if (ext.endsWith(".jsx") || ext.endsWith(".js")) parser = "babel";
-  else if (ext.endsWith(".json")) parser = "json";
-  else if (ext.endsWith(".css") || ext.endsWith(".scss") || ext.endsWith(".less")) parser = "css";
-  else if (ext.endsWith(".html")) parser = "html";
-  else if (ext.endsWith(".md")) parser = "markdown";
-  if (!parser) return text;
-  try {
-    return prettier.format(text, { parser, printWidth: 100 });
-  } catch (e) {
-    console.warn(`Prettier failed for ${filePath}: ${e.message}`);
-    return text;
-  }
-}
+
 
 function normalizeNewlines(s) {
   return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");

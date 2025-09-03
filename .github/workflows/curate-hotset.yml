@@ -1,0 +1,44 @@
+name: Curate Soili HOTSET
+on:
+  push:
+    branches: [ "feature/settings", "main" ]
+    paths:
+      - "scripts/curate/**"
+      - ".github/workflows/curate-hotset.yml"
+  workflow_dispatch: {}
+
+jobs:
+  build-hotset:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Fetch code-index.json (export)
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/serlaoravainen/tuukka-chat-exports/main/code-index.json" \
+            -o code-index.json
+
+      - name: Run curate → hotset → mdpack
+        run: |
+          node scripts/curate/cgpt-curate.mjs code-index.json soili-index.json
+          node scripts/curate/cgpt-hotset.mjs soili-index.json Soili-HOTSET.json Soili-SUPPORT.json
+          node scripts/curate/cgpt-mdpack.mjs
+
+      - name: Commit artifacts
+        run: |
+          mkdir -p chatgpt-exports
+          mv Soili-HOTSET.md chatgpt-exports/
+          mv Soili-SUPPORT.md chatgpt-exports/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chatgpt-exports/Soili-HOTSET.md chatgpt-exports/Soili-SUPPORT.md
+          git commit -m "chore: refresh Soili HOTSET/SUPPORT" || echo "No changes"
+          git push
