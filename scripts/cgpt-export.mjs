@@ -276,6 +276,19 @@ for (const rel of entries) {
 
 // WRITE JSON
 fs.mkdirSync("chatgpt-export", { recursive: true });
+// Varmista .gitattributes myös EXPORT-repoon (tämä kansio pusketaan)
+const exportAttrs = `
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.css  text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.sql  text eol=lf
+`.trimStart();
+fs.writeFileSync(path.join("chatgpt-export", ".gitattributes"), exportAttrs, "utf8");
+
 const outPath = "chatgpt-export/code-index.json";
 fs.writeFileSync(outPath, JSON.stringify(manifest, null, 2), "utf8");
 console.log(
@@ -328,7 +341,8 @@ for (const f of manifest.files) {
 
   const dest = path.join(filesRoot, f.path);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, fullText, "utf8");
+  // Kirjoita aina LF
+  fs.writeFileSync(dest, fullText.replace(/\r\n/g, "\n").replace(/\r/g, "\n"), "utf8");
 }
 console.log(`Also wrote per-file dumps under ${filesRoot}/**`);
 
