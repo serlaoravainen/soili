@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JPDeeQoXNSHgQBE9TeMPOkHTq7atg3QUJQInl6hBkCubPwiICmqAGCWngj60qCf
+\restrict 7yiZKllmjsVtkeoey6suslzMtZh2NdmzF8deY86a8UzmD51B57rRhAW9sISW509
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
@@ -212,6 +212,16 @@ CREATE TYPE auth.factor_type AS ENUM (
     'totp',
     'webauthn',
     'phone'
+);
+
+
+--
+-- Name: oauth_registration_type; Type: TYPE; Schema: auth; Owner: -
+--
+
+CREATE TYPE auth.oauth_registration_type AS ENUM (
+    'dynamic',
+    'manual'
 );
 
 
@@ -485,6 +495,32 @@ $$;
 
 
 --
+-- Name: current_role(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public."current_role"() RETURNS text
+    LANGUAGE sql STABLE
+    AS $$
+  select current_setting('role');
+$$;
+
+
+--
+-- Name: delete_shifts(uuid, date[]); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.delete_shifts(_employee_id uuid, _dates date[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
+  delete from public.shifts
+  where employee_id = _employee_id
+    and work_date = any(_dates);
+end;
+$$;
+
+
+--
 -- Name: enqueue_admin_new_absence(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -655,6 +691,36 @@ end$$;
 
 
 --
+-- Name: enqueue_shift_publication_jobs(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_shift_publication_jobs() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+BEGIN
+  -- Jos rivi ei ole julkaistu, ei tehdä mitään
+  IF NEW.published IS NOT TRUE THEN
+    RETURN NEW;
+  END IF;
+
+  -- Luo mail_jobs-rivi, status=queued → cron käsittelee sen viiveellä
+  INSERT INTO public.mail_jobs(type, payload)
+  VALUES (
+    'shift_publication',
+    jsonb_build_object(
+      'employee_id', NEW.employee_id::text,
+      'work_date', NEW.work_date::text,
+      'hours', COALESCE(NEW.hours, 0),
+      'type', NEW.type::text
+    )
+  );
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: notify_absence_insert(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -725,6 +791,25 @@ end $$;
 
 
 --
+-- Name: publish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.publish_shifts(_start_date date, _end_date date) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
+  update public.shifts
+  set published = true
+  where work_date between _start_date and _end_date;
+
+  -- Tee myös rivi shift_publications-tauluun
+  insert into public.shift_publications (start_date, end_date, status)
+  values (_start_date, _end_date, 'pending');
+end;
+$$;
+
+
+--
 -- Name: set_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -757,6 +842,44 @@ begin
     )
   );
   return new;
+end;
+$$;
+
+
+--
+-- Name: unpublish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.unpublish_shifts(_start_date date, _end_date date) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
+  update public.shifts
+  set published = false
+  where work_date between _start_date and _end_date;
+
+  update public.shift_publications
+  set status = 'canceled'
+  where start_date = _start_date
+    and end_date = _end_date;
+end;
+$$;
+
+
+--
+-- Name: upsert_shifts(uuid, date, text, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.upsert_shifts(_employee_id uuid, _work_date date, _type text, _hours integer) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
+  insert into public.shifts (employee_id, work_date, type, hours)
+  values (_employee_id, _work_date, _type, _hours)
+  on conflict (employee_id, work_date)
+  do update set
+    type = excluded.type,
+    hours = excluded.hours;
 end;
 $$;
 
@@ -1879,6 +2002,29 @@ COMMENT ON TABLE auth.mfa_factors IS 'auth: stores metadata about factors';
 
 
 --
+-- Name: oauth_clients; Type: TABLE; Schema: auth; Owner: -
+--
+
+CREATE TABLE auth.oauth_clients (
+    id uuid NOT NULL,
+    client_id text NOT NULL,
+    client_secret_hash text NOT NULL,
+    registration_type auth.oauth_registration_type NOT NULL,
+    redirect_uris text NOT NULL,
+    grant_types text NOT NULL,
+    client_name text,
+    client_uri text,
+    logo_uri text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    CONSTRAINT oauth_clients_client_name_length CHECK ((char_length(client_name) <= 1024)),
+    CONSTRAINT oauth_clients_client_uri_length CHECK ((char_length(client_uri) <= 2048)),
+    CONSTRAINT oauth_clients_logo_uri_length CHECK ((char_length(logo_uri) <= 2048))
+);
+
+
+--
 -- Name: one_time_tokens; Type: TABLE; Schema: auth; Owner: -
 --
 
@@ -2236,6 +2382,26 @@ CREATE TABLE public.profiles (
 
 
 --
+-- Name: shift_publications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.shift_publications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    published_at timestamp with time zone DEFAULT now() NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL
+);
+
+
+--
+-- Name: TABLE shift_publications; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.shift_publications IS 'Tallentaa vuorojen julkaisun ja sen tilan (pending/sent/canceled).';
+
+
+--
 -- Name: shifts; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2276,54 +2442,6 @@ CREATE TABLE realtime.messages (
     id uuid DEFAULT gen_random_uuid() NOT NULL
 )
 PARTITION BY RANGE (inserted_at);
-
-
---
--- Name: messages_2025_08_29; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_08_29 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
-
-
---
--- Name: messages_2025_08_30; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_08_30 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
-
-
---
--- Name: messages_2025_08_31; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_08_31 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
 
 
 --
@@ -2379,6 +2497,54 @@ CREATE TABLE realtime.messages_2025_09_03 (
 --
 
 CREATE TABLE realtime.messages_2025_09_04 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_05; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_05 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_06; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_06 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_07; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_07 (
     topic text NOT NULL,
     extension text NOT NULL,
     payload jsonb,
@@ -2550,27 +2716,6 @@ CREATE TABLE supabase_migrations.seed_files (
 
 
 --
--- Name: messages_2025_08_29; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_08_29 FOR VALUES FROM ('2025-08-29 00:00:00') TO ('2025-08-30 00:00:00');
-
-
---
--- Name: messages_2025_08_30; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_08_30 FOR VALUES FROM ('2025-08-30 00:00:00') TO ('2025-08-31 00:00:00');
-
-
---
--- Name: messages_2025_08_31; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_08_31 FOR VALUES FROM ('2025-08-31 00:00:00') TO ('2025-09-01 00:00:00');
-
-
---
 -- Name: messages_2025_09_01; Type: TABLE ATTACH; Schema: realtime; Owner: -
 --
 
@@ -2596,6 +2741,27 @@ ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_03
 --
 
 ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_04 FOR VALUES FROM ('2025-09-04 00:00:00') TO ('2025-09-05 00:00:00');
+
+
+--
+-- Name: messages_2025_09_05; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_05 FOR VALUES FROM ('2025-09-05 00:00:00') TO ('2025-09-06 00:00:00');
+
+
+--
+-- Name: messages_2025_09_06; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_06 FOR VALUES FROM ('2025-09-06 00:00:00') TO ('2025-09-07 00:00:00');
+
+
+--
+-- Name: messages_2025_09_07; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_07 FOR VALUES FROM ('2025-09-07 00:00:00') TO ('2025-09-08 00:00:00');
 
 
 --
@@ -2683,6 +2849,22 @@ ALTER TABLE ONLY auth.mfa_factors
 
 ALTER TABLE ONLY auth.mfa_factors
     ADD CONSTRAINT mfa_factors_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: oauth_clients oauth_clients_client_id_key; Type: CONSTRAINT; Schema: auth; Owner: -
+--
+
+ALTER TABLE ONLY auth.oauth_clients
+    ADD CONSTRAINT oauth_clients_client_id_key UNIQUE (client_id);
+
+
+--
+-- Name: oauth_clients oauth_clients_pkey; Type: CONSTRAINT; Schema: auth; Owner: -
+--
+
+ALTER TABLE ONLY auth.oauth_clients
+    ADD CONSTRAINT oauth_clients_pkey PRIMARY KEY (id);
 
 
 --
@@ -2846,6 +3028,14 @@ ALTER TABLE ONLY public.profiles
 
 
 --
+-- Name: shift_publications shift_publications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.shift_publications
+    ADD CONSTRAINT shift_publications_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: shifts shifts_employee_id_work_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2867,30 +3057,6 @@ ALTER TABLE ONLY public.shifts
 
 ALTER TABLE ONLY realtime.messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (id, inserted_at);
-
-
---
--- Name: messages_2025_08_29 messages_2025_08_29_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_08_29
-    ADD CONSTRAINT messages_2025_08_29_pkey PRIMARY KEY (id, inserted_at);
-
-
---
--- Name: messages_2025_08_30 messages_2025_08_30_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_08_30
-    ADD CONSTRAINT messages_2025_08_30_pkey PRIMARY KEY (id, inserted_at);
-
-
---
--- Name: messages_2025_08_31 messages_2025_08_31_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_08_31
-    ADD CONSTRAINT messages_2025_08_31_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -2923,6 +3089,30 @@ ALTER TABLE ONLY realtime.messages_2025_09_03
 
 ALTER TABLE ONLY realtime.messages_2025_09_04
     ADD CONSTRAINT messages_2025_09_04_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_05 messages_2025_09_05_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_05
+    ADD CONSTRAINT messages_2025_09_05_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_06 messages_2025_09_06_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_06
+    ADD CONSTRAINT messages_2025_09_06_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_07 messages_2025_09_07_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_07
+    ADD CONSTRAINT messages_2025_09_07_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -3101,6 +3291,20 @@ CREATE UNIQUE INDEX mfa_factors_user_friendly_name_unique ON auth.mfa_factors US
 --
 
 CREATE INDEX mfa_factors_user_id_idx ON auth.mfa_factors USING btree (user_id);
+
+
+--
+-- Name: oauth_clients_client_id_idx; Type: INDEX; Schema: auth; Owner: -
+--
+
+CREATE INDEX oauth_clients_client_id_idx ON auth.oauth_clients USING btree (client_id);
+
+
+--
+-- Name: oauth_clients_deleted_at_idx; Type: INDEX; Schema: auth; Owner: -
+--
+
+CREATE INDEX oauth_clients_deleted_at_idx ON auth.oauth_clients USING btree (deleted_at);
 
 
 --
@@ -3426,27 +3630,6 @@ CREATE INDEX name_prefix_search ON storage.objects USING btree (name text_patter
 
 
 --
--- Name: messages_2025_08_29_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_08_29_pkey;
-
-
---
--- Name: messages_2025_08_30_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_08_30_pkey;
-
-
---
--- Name: messages_2025_08_31_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_08_31_pkey;
-
-
---
 -- Name: messages_2025_09_01_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
 --
 
@@ -3472,6 +3655,27 @@ ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_03
 --
 
 ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_04_pkey;
+
+
+--
+-- Name: messages_2025_09_05_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_05_pkey;
+
+
+--
+-- Name: messages_2025_09_06_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_06_pkey;
+
+
+--
+-- Name: messages_2025_09_07_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_07_pkey;
 
 
 --
@@ -3507,6 +3711,13 @@ CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH
 --
 
 CREATE TRIGGER trg_employee_shift_deleted AFTER DELETE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_shift_deleted();
+
+
+--
+-- Name: shifts trg_enqueue_shift_publication; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_enqueue_shift_publication AFTER UPDATE OF published ON public.shifts FOR EACH ROW WHEN (((new.published IS TRUE) AND (old.published IS DISTINCT FROM new.published))) EXECUTE FUNCTION public.enqueue_shift_publication_jobs();
 
 
 --
@@ -3797,6 +4008,27 @@ ALTER TABLE auth.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.absences ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: absences absences insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "absences insert" ON public.absences FOR INSERT TO authenticated WITH CHECK (true);
+
+
+--
+-- Name: absences absences select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "absences select" ON public.absences FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: absences absences update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "absences update" ON public.absences FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+
+--
 -- Name: absences absences_insert_auth; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -3808,6 +4040,55 @@ CREATE POLICY absences_insert_auth ON public.absences FOR INSERT TO authenticate
 --
 
 CREATE POLICY absences_read_auth ON public.absences FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: shifts allow anon insert shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "allow anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
+
+
+--
+-- Name: shifts allow anon shifts access; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "allow anon shifts access" ON public.shifts TO anon USING (true) WITH CHECK (true);
+
+
+--
+-- Name: shifts allow anon update shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "allow anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
+
+
+--
+-- Name: shifts anon delete shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon delete shifts" ON public.shifts FOR DELETE TO anon USING (true);
+
+
+--
+-- Name: shifts anon insert shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
+
+
+--
+-- Name: shifts anon select shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon select shifts" ON public.shifts FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: shifts anon update shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
 
 
 --
@@ -3831,10 +4112,66 @@ CREATE POLICY "dev: notifications select for anon" ON public.notifications FOR S
 
 
 --
+-- Name: absences dev_read_absences_anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY dev_read_absences_anon ON public.absences FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: employees dev_read_employees_anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY dev_read_employees_anon ON public.employees FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: notifications dev_read_notifications_anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY dev_read_notifications_anon ON public.notifications FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: shifts dev_read_shifts_anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY dev_read_shifts_anon ON public.shifts FOR SELECT TO anon USING (true);
+
+
+--
 -- Name: employees; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
 ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: employees employees delete; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "employees delete" ON public.employees FOR DELETE TO authenticated USING (true);
+
+
+--
+-- Name: employees employees insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "employees insert" ON public.employees FOR INSERT TO authenticated WITH CHECK (true);
+
+
+--
+-- Name: employees employees select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "employees select" ON public.employees FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: employees employees update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "employees update" ON public.employees FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
 
 --
 -- Name: employees employees_select_auth; Type: POLICY; Schema: public; Owner: -
@@ -3856,6 +4193,27 @@ ALTER TABLE public.mail_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: notifications notifications insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "notifications insert" ON public.notifications FOR INSERT TO authenticated WITH CHECK (true);
+
+
+--
+-- Name: notifications notifications select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "notifications select" ON public.notifications FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: notifications notifications update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "notifications update" ON public.notifications FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
+
+--
 -- Name: notifications notifications_select_auth; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -3867,6 +4225,27 @@ CREATE POLICY notifications_select_auth ON public.notifications FOR SELECT TO au
 --
 
 ALTER TABLE public.shifts ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: shifts shifts insert; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "shifts insert" ON public.shifts FOR INSERT TO authenticated WITH CHECK (true);
+
+
+--
+-- Name: shifts shifts select; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "shifts select" ON public.shifts FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: shifts shifts update; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "shifts update" ON public.shifts FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+
 
 --
 -- Name: shifts shifts_select_auth; Type: POLICY; Schema: public; Owner: -
@@ -3995,5 +4374,5 @@ CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JPDeeQoXNSHgQBE9TeMPOkHTq7atg3QUJQInl6hBkCubPwiICmqAGCWngj60qCf
+\unrestrict 7yiZKllmjsVtkeoey6suslzMtZh2NdmzF8deY86a8UzmD51B57rRhAW9sISW509
 
