@@ -120,9 +120,27 @@ const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
 const saveAll = useScheduleStore((s) => s.saveAll);
 const dirty = useScheduleStore((s) => s.dirty);
 
-async function handleSave() {
-  await saveAll();
+// Julkaisu / peruutus
+async function handlePublish() {
+  const { publishShifts } = useScheduleStore.getState();
+  await publishShifts();
 }
+
+async function handleUnpublish() {
+  const { unpublishShifts } = useScheduleStore.getState();
+  await unpublishShifts();
+}
+
+// Automaattinen tallennus debounce-logiikalla
+useEffect(() => {
+  if (!dirty) return;
+  const timeout = setTimeout(() => {
+    saveAll().then(() => {
+      setLastSavedAt(formatTime());
+    });
+  }, 800); // debounce 800ms
+  return () => clearTimeout(timeout);
+}, [dirty, saveAll]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -523,20 +541,31 @@ await supabase.from("notifications").insert({
 
             <Separator orientation="vertical" className="h-8" />
 
-<Button
-  variant="outline"
-  onClick={handleSave}
-  disabled={!dirty}
-  className={dirty ? "border-amber-500 text-amber-600" : ""}
->
-  <Save className="w-4 h-4 mr-2" />
-  Tallenna
-  {dirty && (
-    <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
-      •
-    </Badge>
-  )}
-</Button>
+{useScheduleStore((s) => s.publishStatus) === "pending" ? (
+  <Button
+    variant="outline"
+    onClick={handleUnpublish}
+    className="border-red-500 text-red-700"
+  >
+    <X className="w-4 h-4 mr-2" />
+    Peru julkaisu
+  </Button>
+) : (
+  <Button
+    variant="outline"
+    onClick={handlePublish}
+    className="border-emerald-500 text-emerald-700"
+  >
+    <Check className="w-4 h-4 mr-2" />
+    Julkaise vuorot
+  </Button>
+)}
+
+{lastSavedAt && (
+  <span className="text-xs text-muted-foreground ml-2">
+    Tallennettu {lastSavedAt}
+  </span>
+)}
 
 
 <div className="flex items-center gap-1">

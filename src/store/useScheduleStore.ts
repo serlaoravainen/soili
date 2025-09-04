@@ -84,6 +84,9 @@ type State = {
   applyCellChange: (p: { employee_id: string; work_date: string; hours: number | null }) => void;
 
   saveAll: () => Promise<void>;
+  publishStatus: "idle" | "pending" | "sent" | "canceled";
+  publishShifts: () => Promise<void>;
+  unpublishShifts: () => Promise<void>;
 
   undo: () => void;
   redo: () => void;
@@ -105,6 +108,7 @@ function todayLocalISO() {
 export const useScheduleStore = create<State>()(
   persist(
   devtools((set, get) => ({
+    publishStatus: "idle",
     employees: [],
     dates: [],
     shiftsMap: {},
@@ -204,6 +208,13 @@ saveAll: async () => {
     toast.info("Ei tallennettavia muutoksia");
     return;
   }
+  // DEBUG: tarkista mikä rooli Supabase antaa tälle clientille
+  try {
+    const { data: roleData, error: roleError } = await supabase.rpc("current_role");
+    console.log("Supabase current_role RPC:", roleData, roleError);
+  } catch (err) {
+    console.error("Virhe current_role tarkistuksessa:", err);
+  }
 
   const upserts: ShiftRow[] = [];
   const deletes: { employee_id: string; work_date: string }[] = [];
@@ -216,18 +227,24 @@ saveAll: async () => {
         employee_id: c.employee_id,
         work_date: c.work_date,
         type: "normal",
-        hours: c.hours,
+        hours: c.hours ?? 0, // varmistetaan ettei mene null-arvo
       });
     }
   }
 
   try {
-    // 1) Upsertit ensin (turvallista ja idempotenttia)
+    // 1) Upsertit ensin RPC:n kautta (varmempi kuin onConflict RESTissä)
     if (upserts.length) {
-      const { error } = await supabase
-        .from("shifts")
-        .upsert(upserts, { onConflict: "employee_id,work_date" });
-      if (error) throw error;
+      for (const row of upserts) {
+        const { error } = await supabase.rpc("upsert_shifts", {
+          _employee_id: row.employee_id,
+          _work_date: row.work_date,
+          _type: row.type,
+          _hours: row.hours ?? 0,
+        });
+        console.log("upsert_shifts result:", row, error);
+        if (error) throw error;
+      }
     }
 
     // 2) Poistot **ilman ristiin-IN-bugia**: ryhmittele työntekijöittäin
@@ -244,12 +261,13 @@ saveAll: async () => {
         const chunkSize = 1000;
         for (let i = 0; i < dates.length; i += chunkSize) {
           const sub = dates.slice(i, i + chunkSize);
-          const { error } = await supabase
+          const res = await supabase
             .from("shifts")
             .delete()
-            .eq("employee_id", empId) // kriittinen: kohdistus yhteen employeeen
-            .in("work_date", sub);    // vain kyseisen employee_id:n päivät
-          if (error) throw error;
+            .eq("employee_id", empId)
+            .in("work_date", sub);
+          console.log("saveAll delete response:", res);
+          if (res.error) throw res.error;
         }
       }
     }
@@ -257,9 +275,69 @@ saveAll: async () => {
     set({ pending: {}, dirty: false });
     toast.success("Tallennettu");
   } catch (e) {
-    console.error(e);
+    console.error("saveAll error:", e);
     toast.error("Tallennus epäonnistui");
     // Älä nollaa pendingiä epäonnistumisessa
+  }
+},
+publishShifts: async () => {
+  try {
+    // 1. Varmista että kaikki muutokset tallessa
+    await get().saveAll();
+
+    // 2. Käytä RPC:ta joka hoitaa julkaisemisen + shift_publications -merkinnän
+    const { startDateISO, days } = get();
+    const endDate = new Date(startDateISO);
+    endDate.setDate(endDate.getDate() + days - 1);
+    const endISO = endDate.toISOString().slice(0, 10);
+
+    const { error } = await supabase.rpc("publish_shifts", {
+      _start_date: startDateISO,
+      _end_date: endISO,
+    });
+    if (error) throw error;
+
+  // 4. Lisää yksi shift_publication -job mail_jobs-jonoon
+  const { error: jobError } = await supabase
+    .from("mail_jobs")
+    .insert({
+      type: "shift_publication",
+      payload: {
+        start_date: startDateISO,
+        end_date: endISO
+      },
+      status: "queued",
+      attempt_count: 0,
+      created_at: new Date().toISOString()
+    });
+  if (jobError) throw jobError;
+
+  set({ publishStatus: "pending" });
+  toast.success("Vuorot julkaistu! Sähköpostit lähtevät 30 minuutin viiveellä.");
+  } catch (e) {
+    console.error(e);
+    toast.error("Julkaisu epäonnistui");
+  }
+},
+
+unpublishShifts: async () => {
+  try {
+    const { startDateISO, days } = get();
+    const endDate = new Date(startDateISO);
+    endDate.setDate(endDate.getDate() + days - 1);
+    const endISO = endDate.toISOString().slice(0, 10);
+
+    const { error } = await supabase.rpc("unpublish_shifts", {
+      _start_date: startDateISO,
+      _end_date: endISO,
+    });
+    if (error) throw error;
+
+    set({ publishStatus: "canceled" });
+    toast.success("Julkaisu peruttu ja merkattu perutuksi.");
+  } catch (e) {
+    console.error(e);
+    toast.error("Peruutus epäonnistui");
   }
 },
 

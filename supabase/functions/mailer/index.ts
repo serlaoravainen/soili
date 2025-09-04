@@ -164,6 +164,49 @@ async function processEmployeeShiftDeleted(job: BaseJob, settings: AppSettingsRo
   return "sent";
 }
 
+// ---- Process shift publication ----
+async function processShiftPublication(job: BaseJob, settings: AppSettingsRow) {
+  if (!settings.email_notifications) return "skipped: email_notifications=false";
+  if (!settings.schedule_changes) return "skipped: schedule_changes=false";
+
+  const p = job.payload;
+  const empId = String(p.employee_id ?? "");
+  if (!empId) return "skipped: no employee_id";
+
+  // Hae työntekijän email
+  const { data: emp, error: empErr } = await sb
+    .from("employees")
+    .select("email,name")
+    .eq("id", empId)
+    .maybeSingle();
+  if (empErr) throw empErr;
+  const to = emp?.email;
+  if (!to) return "skipped: employee has no email";
+
+  const date = String(p.work_date ?? "");
+  const hours = p.hours ? String(p.hours) : "";
+  const type = String(p.type ?? "");
+
+  const subject = `Vuorosi on julkaistu (${date})`;
+  const lines = [
+    emp?.name ? `Hei ${emp.name},` : "Hei,",
+    "",
+    "Sinulle on julkaistu uusi työvuoro:",
+    date ? `Päivä: ${date}` : null,
+    hours ? `Tunnit: ${hours}` : null,
+    type ? `Tyyppi: ${type}` : null,
+    "",
+    "Terveisin,",
+    "Soili",
+  ].filter(Boolean);
+
+  const text = lines.join("\n");
+
+  await sendEmail([to], subject, text);
+  return "sent";
+}
+
+
 // =============== BULK MELUNESTO: KOONTI 5–10 MIN IKKUNASSA ===============
 // Perusidea: kun törmätään yhteen employee_* jobiin, kerätään kaikki saman työntekijän
 // queued/tuoreet jobit viimeisten N minuuttien sisällä, merkitään ne 'processing',
@@ -440,6 +483,8 @@ async function processQueue(limit = 25) {
         outcome = await processEmployeeNewShift(job, settings);
       } else if (job.type === "employee_shift_deleted") {
         outcome = await processEmployeeShiftDeleted(job, settings);
+      } else if (job.type === "shift_publication") {
+        outcome = await processShiftPublication(job, settings);
       } else {
         outcome = `skipped: unknown type ${job.type}`;
       }
