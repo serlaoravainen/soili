@@ -37,8 +37,6 @@ type PendingChange = {
   hours: number; // 0 => poista, >0 => upsert "normal"
 };
 
-type PendingMap = Record<string, PendingChange>; // key: emp|date
-type ShiftsMap = Record<string, ShiftRow>;
 
 type State = {
 
@@ -297,20 +295,6 @@ publishShifts: async () => {
     });
     if (error) throw error;
 
-  // 4. Lisää yksi shift_publication -job mail_jobs-jonoon
-  const { error: jobError } = await supabase
-    .from("mail_jobs")
-    .insert({
-      type: "shift_publication",
-      payload: {
-        start_date: startDateISO,
-        end_date: endISO
-      },
-      status: "queued",
-      attempt_count: 0,
-      created_at: new Date().toISOString()
-    });
-  if (jobError) throw jobError;
 
   set({ publishStatus: "pending" });
   toast.success("Vuorot julkaistu! Sähköpostit lähtevät 30 minuutin viiveellä.");

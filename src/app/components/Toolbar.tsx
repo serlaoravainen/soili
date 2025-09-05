@@ -18,7 +18,6 @@ import {
   FileSpreadsheet,
   FileText,
   Wand2,
-  Save,
   Undo,
   Redo,
   Filter,
