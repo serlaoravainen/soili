@@ -1,0 +1,35 @@
+openapi: 3.1.0
+info:
+  title: Soili Code Access
+  version: "0.1.0"
+servers:
+  - url: https://{project}.functions.supabase.co
+    variables:
+      project:
+        default: musrmpblsazxcrhwthtc   # VAIHDA OMA PROJECT REF
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
+paths:
+  /soili-code/code/get:
+    get:
+      operationId: getCode
+      summary: Hae raakasisältö manifestin polulla
+      parameters:
+        - in: query
+          name: path
+          required: true
+          schema:
+            type: string
+            description: "Manifest-polku, esim. src/store/useSettingsStore.ts"
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string

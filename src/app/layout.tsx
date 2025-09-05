@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import Script from "next/script"
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import ServiceWorkerRegister from "./ServiceWorkerRegister";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -23,18 +25,31 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="fi" suppressHydrationWarning>
+
+      <head>
+        {/* Aseta html.class (light/dark) ennen React-hydraatiota */}
+        <Script id="theme-init" strategy="beforeInteractive">
+          {`(function () {
+            try {
+              var key = 'soili-theme';
+              var mode = localStorage.getItem(key) || 'system';
+              var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+              var effective = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+              var c = document.documentElement.classList;
+              c.remove('light','dark');
+              c.add(effective);
+            } catch (_) {}
+          })();`}
+        </Script>
+      </head>
+
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <ServiceWorkerRegister />
       </body>
     </html>
   );
-}
-// vain selaimessa
-if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(console.error);
-  });
 }

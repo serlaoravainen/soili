@@ -1,7 +1,7 @@
 "use client";
 
 import { useScheduleStore } from "@/store/useScheduleStore";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
@@ -9,15 +9,15 @@ import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
 import NotificationsPopover from "./ui/NotificationsPopover";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import SettingsDialog from "./SettingsDialog";
+import { useSettingsStore } from "@/store/useSettingsStore";
 import {
   Upload,
   RefreshCw,
-  Settings,
   Calendar as CalIcon,
   FileSpreadsheet,
   FileText,
   Wand2,
-  Save,
   Undo,
   Redo,
   Filter,
@@ -30,17 +30,15 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supaBaseClient";
+import { addDaysLocalISO } from "@/lib/dateUtils";
 
 
+// ——— Valikoiva, tyypitetty poiminta hashydrate-funktiolle ilman anyä ———
+type HashydrateFn = (() => void) | undefined;
+const selectHashydrate = <T extends object>(s: T): HashydrateFn =>
+  (s as unknown as { hashydrate?: () => void }).hashydrate;
 
 
-
-// pvm apurit
-function addDaysISO(iso: string, add: number) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + add);
-  return d.toISOString().slice(0, 10);
-}
 
 
 function formatTime(d = new Date()) {
@@ -80,9 +78,37 @@ type ShiftRow = {
 };
 
 const Toolbar = () => {
+
+  const [isClient, setIsClient] = useState(false);
+  useEffect(() => { setIsClient(true); }, []);
+
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
-  const range = useMemo(() => Array.from({ length: DAYS }, (_, i) => addDaysISO(START_ISO, i)), [START_ISO, DAYS]);
+
+
+   const defaultHours = useSettingsStore((s) => s.settings.autoGeneration.defaultHours);
+   const hashydrateSettings = useSettingsStore(selectHashydrate);
+   const hashydrateSchedule = useScheduleStore(selectHashydrate);
+
+  useEffect(() => {
+    // Aja heti mountissa ja aina hashin vaihtuessa.
+    // Järjestys: ensin asetukset -> sitten aikataulu.
+    const run = () => {
+      try { hashydrateSettings?.(); } catch {}
+      try { hashydrateSchedule?.(); } catch {}
+    };
+    run();
+    window.addEventListener("hashchange", run);
+    return () => window.removeEventListener("hashchange", run);
+  }, [hashydrateSettings, hashydrateSchedule]);
+
+
+
+  const range = useMemo(
+  () => Array.from({ length: DAYS }, (_, i) => addDaysLocalISO(START_ISO, i)),
+  [START_ISO, DAYS]
+);
+
 
 
 const undo = useScheduleStore((s) => s.undo);
@@ -93,9 +119,27 @@ const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
 const saveAll = useScheduleStore((s) => s.saveAll);
 const dirty = useScheduleStore((s) => s.dirty);
 
-async function handleSave() {
-  await saveAll();
+// Julkaisu / peruutus
+async function handlePublish() {
+  const { publishShifts } = useScheduleStore.getState();
+  await publishShifts();
 }
+
+async function handleUnpublish() {
+  const { unpublishShifts } = useScheduleStore.getState();
+  await unpublishShifts();
+}
+
+// Automaattinen tallennus debounce-logiikalla
+useEffect(() => {
+  if (!dirty) return;
+  const timeout = setTimeout(() => {
+    saveAll().then(() => {
+      setLastSavedAt(formatTime());
+    });
+  }, 800); // debounce 800ms
+  return () => clearTimeout(timeout);
+}, [dirty, saveAll]);
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
@@ -104,19 +148,23 @@ async function handleSave() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ————— data hakuja joita export/healthcheck/auto-gen käyttää —————
-  async function fetchActiveEmployees(): Promise<EmpRow[]> {
-    const { data, error } = await supabase
+  // Yleinen hakufunktio: includeInactive=true -> ei suodateta is_active:lla
+  async function fetchEmployees(includeInactive: boolean): Promise<EmpRow[]> {
+    let q = supabase
       .from("employees")
       .select("id, name, email, department, is_active")
-      .eq("is_active", true)
       .order("created_at", { ascending: true });
-
+    if (!includeInactive) q = q.eq("is_active", true);
+    const { data, error } = await q;
     if (error) throw error;
     const rows = (data ?? []) as EmpRow[];
     setEmpCount(rows.length);
     return rows;
   }
-
+  // Säilytetään vanha signatuuri muulle koodille (auto-gen, import, PDF…)
+ async function fetchActiveEmployees(): Promise<EmpRow[]> {
+    return fetchEmployees(false);
+  }
 
   async function fetchShiftsByRange(empIds?: string[]): Promise<ShiftRow[]> {
     const start = range[0];
@@ -203,7 +251,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
             employee_id: emp.id,
             work_date: d,
             type: "normal",
-            hours: 8,
+            hours: defaultHours,
           });
         }
       }
@@ -237,45 +285,87 @@ await supabase.from("notifications").insert({
 
 
   // 3) Export CSV (Excel avaa suoraan)
+  const exportSettings = useSettingsStore((s) => s.settings.export);
+
+
   const handleExportExcel = async () => {
     try {
-      const employees = await fetchActiveEmployees();
-      const shifts = await fetchShiftsByRange(employees.map((e) => e.id));
+      // Hae työntekijät asetuksen mukaan (mukaan myös ei-aktiiviset tarvittaessa)
+      const employees = await fetchEmployees(!!exportSettings.includeInactiveEmployees);
+      const empIds = employees.map((e) => e.id);
+      const shifts = await fetchShiftsByRange(empIds);
       const byId = new Map(employees.map((e) => [e.id, e]));
-      const header = [
-        "employee_name",
-        "employee_email",
-        "department",
-        "work_date",
-        "type",
-        "hours",
-      ];
 
-      const rows = shifts
-        .sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
-        .map((s) => {
-          const emp = byId.get(s.employee_id)!;
-          return [
-            emp?.name ?? "",
-            emp?.email ?? "",
-            emp?.department ?? "",
-            s.work_date,
-            s.type,
-            s.hours ?? 0,
-          ];
-        });
+      // Dynaaminen header asetusten mukaan
+      const header: string[] = [];
+      if (exportSettings.includeNames) header.push("employee_name");
+      if (exportSettings.includeEmails) header.push("employee_email");
+      if (exportSettings.includeDepartments) header.push("department");
+      header.push("work_date", "type", "hours");
 
-      // lisää myös puuttuvat (tyhjät) rivit jos haluat: MVP ei lisää
+      // Nopeaan lookupiin
+      const shiftMap = new Map<string, ShiftRow>(); // empId|date -> shift
+      shifts.forEach((s) => shiftMap.set(`${s.employee_id}|${s.work_date}`, s));
 
-      const csv = [header, ...rows]
+      // Apuri: muodosta yksi rivi
+      const makeRow = (emp: EmpRow, date: string, s?: ShiftRow): (string | number)[] => {
+        const row: (string | number)[] = [];
+        if (exportSettings.includeNames) row.push(emp?.name ?? "");
+        if (exportSettings.includeEmails) row.push(emp?.email ?? "");
+        if (exportSettings.includeDepartments) row.push(emp?.department ?? "");
+        row.push(date, s?.type ?? "", s?.hours ?? 0);
+        return row;
+      };
+
+      // Rivit: includeEmptyShifts = jokaisesta päivästä rivi, muuten vain olemassa olevat
+      const rows: (string | number)[][] = [];
+      if (exportSettings.includeEmptyShifts) {
+        for (const emp of employees) {
+          for (const d of range) {
+            rows.push(makeRow(emp, d, shiftMap.get(`${emp.id}|${d}`)));
+          }
+        }
+      } else {
+        shifts
+          .sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0))
+          .forEach((s) => rows.push(makeRow(byId.get(s.employee_id)!, s.work_date, s)));
+      }
+
+      let csv = [header, ...rows]
         .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
         .join("\n");
+
+        // Lisätty: tuntisummat loppuun, jos asetus päällä
+      if (exportSettings.includeHourTotals) {
+        const totals = new Map<string, number>(); // empId -> total hours
+        for (const emp of employees) totals.set(emp.id, 0);
+        for (const s of shifts) totals.set(s.employee_id, (totals.get(s.employee_id) ?? 0) + (s.hours ?? 0));
+        const totalsRows = Array.from(totals.entries()).map(([empId, sum]) => {
+          const emp = byId.get(empId)!;
+          // label: nimi > email > id
+          const label =
+            exportSettings.includeNames ? emp.name :
+            exportSettings.includeEmails ? emp.email : emp.id;
+          return [label, String(sum)];
+        });
+        const totalsCsv =
+          "\n\n" +
+          ["employee", "total_hours"].join(",") +
+          "\n" +
+          totalsRows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+        csv += totalsCsv;
+      }
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `vuorot_${range[0]}_${range[range.length - 1]}.csv`;
+        // Tiedostonimeen yrityksen nimi
+      const company = (exportSettings.companyName || "vuorot")
+        .replace(/[^\p{L}\p{N}_-]+/gu, "_")
+        .replace(/_{2,}/g, "_")
+        .replace(/^_|_$/g, "");
+      a.download = `${company}_${range[0]}_${range[range.length - 1]}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success("CSV ladattu");
@@ -450,20 +540,31 @@ await supabase.from("notifications").insert({
 
             <Separator orientation="vertical" className="h-8" />
 
-<Button
-  variant="outline"
-  onClick={handleSave}
-  disabled={!dirty}
-  className={dirty ? "border-amber-500 text-amber-600" : ""}
->
-  <Save className="w-4 h-4 mr-2" />
-  Tallenna
-  {dirty && (
-    <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-700">
-      •
-    </Badge>
-  )}
-</Button>
+{useScheduleStore((s) => s.publishStatus) === "pending" ? (
+  <Button
+    variant="outline"
+    onClick={handleUnpublish}
+    className="border-red-500 text-red-700"
+  >
+    <X className="w-4 h-4 mr-2" />
+    Peru julkaisu
+  </Button>
+) : (
+  <Button
+    variant="outline"
+    onClick={handlePublish}
+    className="border-emerald-500 text-emerald-700"
+  >
+    <Check className="w-4 h-4 mr-2" />
+    Julkaise vuorot
+  </Button>
+)}
+
+{lastSavedAt && (
+  <span className="text-xs text-muted-foreground ml-2">
+    Tallennettu {lastSavedAt}
+  </span>
+)}
 
 
 <div className="flex items-center gap-1">
@@ -518,9 +619,7 @@ await supabase.from("notifications").insert({
             <NotificationsPopover />
 
 
-            <Button variant="ghost" size="sm" onClick={() => toast.info("Asetukset tulevat pian.")}>
-              <Settings className="w-4 h-4" />
-            </Button>
+          <SettingsDialog />
           </div>
         </div>
 
@@ -538,7 +637,7 @@ await supabase.from("notifications").insert({
             </span>
             <span>•</span>
             <span>
-              Jakso: {range[0]} – {range[range.length - 1]}
+              Jakso: {isClient && range.length > 0 ? `${range[0]} – ${range[range.length - 1]}` : "—"}
             </span>
           </div>
           
@@ -564,6 +663,7 @@ function PeriodSelector() {
   const startISO = useScheduleStore((s) => s.startDateISO);
   const setRange = useScheduleStore((s) => s.setRange);
 
+
   const current = PERIODS.find((p) => p.value === days) ?? PERIODS[1];
 
   return (
@@ -571,13 +671,12 @@ function PeriodSelector() {
       <PopoverTrigger asChild>
         <Button variant="ghost" size="sm" className="h-9 px-3 min-w-[160px] justify-start">
           <span className="inline-flex items-center gap-2">
-             <CalIcon className="w-4 h-4" />
+            <CalIcon className="w-4 h-4" />
             <span>{current.label}</span>
-          <ChevronDown className="w-3 h-3" />
+            <ChevronDown className="w-3 h-3" />
           </span>
         </Button>
       </PopoverTrigger>
-
       <PopoverContent className="w-72 p-2" align="center">
         <div className="px-2 py-1.5 text-sm font-medium text-muted-foreground">
           Valitse aikajakso
@@ -590,7 +689,9 @@ function PeriodSelector() {
                 key={option.value}
                 role="menuitemradio"
                 aria-checked={active}
-                onClick={() => setRange(startISO, option.value)}
+                onClick={() => {
+  setRange(startISO, option.value); // ei alignointia täällä
+}}
                 className={`w-full flex items-center justify-between p-2 rounded-md text-left hover:bg-accent ${
                   active ? "bg-accent" : ""
                 }`}
@@ -602,7 +703,6 @@ function PeriodSelector() {
                 <div className="flex items-center">
                   {active && <Check className="w-4 h-4 text-primary" />}
                 </div>
-                
               </button>
             );
           })}
@@ -611,6 +711,8 @@ function PeriodSelector() {
     </Popover>
   );
 }
+
+
 
 
 const DEFAULT_FILTERS = {

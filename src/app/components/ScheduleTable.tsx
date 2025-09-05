@@ -11,6 +11,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { useScheduleStore } from "@/store/useScheduleStore";
+import { useSettingsStore } from "@/store/useSettingsStore";
+import { alignToWeekStart } from "@/lib/dateUtils";
+import { logError, logInfo } from "@/lib/logger";
 
 
 
@@ -42,8 +45,8 @@ interface ScheduleTableProps {
 
 function addDaysISO(iso: string, add: number) {
   // "T00:00:00" poistaa aikavyöhykkeen heiton
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + add);
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + add);
   return d.toISOString().slice(0, 10);
 }
 
@@ -82,6 +85,12 @@ const ScheduleTable: React.FC<ScheduleTableProps> = () => {
 
 const startISO = useScheduleStore((s) => s.startDateISO);
 const days = useScheduleStore((s) => s.days);
+const weekStartDay = useSettingsStore((s) => s.settings.general.weekStartDay);
+
+const alignedStart = useMemo(
+  () => alignToWeekStart(startISO, weekStartDay),
+  [startISO, weekStartDay]
+);
 
 
 
@@ -126,95 +135,91 @@ const filteredEmployees = useMemo(() => {
 
 
   // Päivärivi tuotetaan ISO:sta -> näyttää täsmälleen sun UI:n kaltaisen otsikon
-  const dates: DateCell[] = useMemo(() => {
-    return Array.from({ length: days }).map((_, i): DateCell => {
-      const iso = addDaysISO(startISO, i);
-      const d = new Date(iso + "T00:00:00");
-      return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
-    });
-  }, [startISO, days]);
+const dates: DateCell[] = useMemo(() => {
+  return Array.from({ length: days }).map((_, i): DateCell => {
+    const iso = addDaysISO(alignedStart, i);
+    const d = new Date(iso + "T00:00:00Z");
+    return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
+  });
+}, [alignedStart, days]);
+
+  // Alignaa heti mountissa ja aina kun viikon aloituspäivä muuttuu,
+  // jotta näkymä on johdonmukainen myös ilman Toolbarin efektiä.
+
 
   // Vuorot mapattuna: key = `${employee_id}|${work_date}`
   
 
-  // 1) Hae työntekijät + 2) hae vuorot valitulle jaksolle
-  useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
+// 1) Hae työntekijät + 2) hae vuorot valitulle jaksolle
+useEffect(() => {
+  (async () => {
+    try {
+      setLoading(true);
+      // Employees
+      const { data: empData, error: empErr } = await supabase
+        .from("employees")
+        .select("id, name, email, department, is_active, created_at")
+        .order("created_at", { ascending: true });
+      if (empErr) throw empErr;
 
-        // Employees
-        const { data: empData, error: empErr } = await supabase
-          .from("employees")
-          .select("id, name, email, department, is_active, created_at")
-          .order("created_at", { ascending: true });
+      const mappedEmp: Employee[] = (empData ?? []).map((row: EmployeeRow) => ({
+        id: row.id,
+        name: row.name,
+        email: row.email,
+        department: row.department,
+        isActive: !!row.is_active,
+        shifts: [] as ShiftType[],
+      }));
 
-        if (empErr) throw empErr;
+      const { data: s, error: sErr } = await supabase
+        .from("shifts")
+        .select("employee_id, work_date, type, hours")
+        .gte("work_date", dates[0].iso)
+        .lte("work_date", dates[dates.length - 1].iso)
+        .in("employee_id", mappedEmp.map((e) => e.id));
+      if (sErr) throw sErr;
 
-const mappedEmp: Employee[] = (empData ?? []).map((row: EmployeeRow) => ({
-  id: row.id,
-  name: row.name,
-  email: row.email,               // ✅ lisää email
-  department: row.department,
-  isActive: !!row.is_active,
-  shifts: [] as ShiftType[],      // ✅ lisää shifts placeholder
-}));
+      useScheduleStore.getState().hydrate({
+        employees: mappedEmp,
+        dates,
+        shifts: (s ?? []).map((r) => ({
+          employee_id: r.employee_id,
+          work_date: r.work_date,
+          type: r.type as "normal" | "locked" | "absent" | "holiday",
+          hours: r.hours ?? 0,
+        })),
+      });
 
+      const { data: abs, error: absErr } = await supabase
+        .from("absences")
+        .select("employee_id, start_date, end_date, reason, status")
+        .eq("status", "approved")
+        .in("employee_id", mappedEmp.map((e) => e.id));
+      if (absErr) throw absErr;
 
-        const { data: s, error: sErr } = await supabase
-  .from("shifts")
-  .select("employee_id, work_date, type, hours")
-  .gte("work_date", dates[0].iso)
-  .lte("work_date", dates[dates.length - 1].iso)
-  .in(
-    "employee_id",
-    mappedEmp.map((e) => e.id)
-  );
-
-if (sErr) throw sErr;
-
-useScheduleStore.getState().hydrate({
-  employees: mappedEmp,
-  dates,
-  shifts: (s ?? []).map(r => ({
-    employee_id: r.employee_id,
-    work_date: r.work_date,
-    type: r.type as "normal" | "locked" | "absent" | "holiday",
-    hours: r.hours ?? 0,
-  })),
-});
-const { data: abs, error: absErr } = await supabase
-  .from("absences")
-  .select("employee_id, start_date, end_date, reason, status")
-  .eq("status", "approved")
-  .in("employee_id", mappedEmp.map((e) => e.id));
-
-if (absErr) throw absErr;
-
-const absMap: Record<string, { type: "absent" | "holiday"; reason: string }> = {};
-(abs ?? []).forEach((a: AbsenceRow) => {
-  const start = new Date(a.start_date);
-  const end = a.end_date ? new Date(a.end_date) : start;
-
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const iso = d.toISOString().slice(0, 10);
-    absMap[`${a.employee_id}|${iso}`] = {
-      type: a.reason?.toLowerCase() === "holiday" ? "holiday" : "absent",
-      reason: a.reason ?? "",
-    };
-  }
-});
-setAbsencesMap(absMap);
-
-      } catch (e) {
-        console.error(e);
-        toast.error("Tietojen haku epäonnistui");
-      } finally {
-        setLoading(false);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startISO, days]);
+      const absMap: Record<string, { type: "absent" | "holiday"; reason: string }> = {};
+      (abs ?? []).forEach((a: AbsenceRow) => {
+        const start = new Date(a.start_date);
+        const end = a.end_date ? new Date(a.end_date) : start;
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          const iso = d.toISOString().slice(0, 10);
+          absMap[`${a.employee_id}|${iso}`] = {
+            type: a.reason?.toLowerCase() === "holiday" ? "holiday" : "absent",
+            reason: a.reason ?? "",
+          };
+        }
+      });
+      setAbsencesMap(absMap);
+      logInfo("ScheduleTable initial fetch OK");
+    } catch (e) {
+      logError("ScheduleTable initial fetch FAILED", e);
+      toast.error("Tietojen haku epäonnistui");
+    } finally {
+      setLoading(false);
+    }
+  })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [startISO, days]);
 
 
 

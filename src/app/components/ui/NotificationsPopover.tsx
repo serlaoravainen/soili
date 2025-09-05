@@ -9,6 +9,7 @@ import { Bell, Check, Calendar, UserPlus, Wand2, AlertCircle } from "lucide-reac
 import { supabase } from "@/lib/supaBaseClient";
 import { toast } from "sonner";
 import { requestPermissionAndSubscribe } from "@/lib/pushClient";
+import { logError, logInfo } from "@/lib/logger";
 
 // NotificationsPopover.tsx, importtien jälkeen
 
@@ -19,7 +20,7 @@ async function enablePush() {
     await requestPermissionAndSubscribe();
     toast.success("Push-ilmoitukset käytössä");
   } catch (e) {
-    console.error(e);
+    logError("notifications enablePush FAILED", e);
     toast.error("Pushin käyttöönotto epäonnistui");
   }
 }
@@ -38,7 +39,7 @@ async function disablePush() {
     }
     toast.success("Push-ilmoitukset poistettu käytöstä");
   } catch (e) {
-    console.error(e);
+    logError("notifications disablePush FAILED", e);
     toast.error("Pushin poisto epäonnistui");
   }
 }
@@ -95,16 +96,21 @@ export default function NotificationsPopover() {
   const unread = items.filter((n) => !n.is_read).length;
 
 
+const [canWrite, setCanWrite] = React.useState(false);
+
   React.useEffect(() => {
     (async () => {
+     const { data: sessionRes } = await supabase.auth.getSession();
+     setCanWrite(!!sessionRes.session); // vain kirjautuneena saa merkitä luetuksi
       const { data, error } = await supabase
         .from("notifications")
         .select("*")
         .order("created_at", { ascending: false })
         .limit(50);
       if (error) {
-        console.error("[notifications initial fetch]", error);
+        logError("notifications initial fetch FAILED", error);
       } else {
+        logInfo("notifications initial fetch OK");
         setItems((data ?? []) as Noti[]);
       }
     })();
@@ -149,12 +155,13 @@ React.useEffect(() => {
 
 
   async function markAllRead() {
+    if (!canWrite) { toast.error("Kirjaudu sisään merkataksesi ilmoituksia luetuiksi"); return; }
     const { error } = await supabase
       .from("notifications")
       .update({ is_read: true })
       .eq("is_read", false);
     if (error) {
-      console.error(error);
+      logError("notifications markAllRead FAILED", error);
       toast.error("Merkintä epäonnistui");
       return;
     }
@@ -163,10 +170,11 @@ React.useEffect(() => {
 
  // markRead – tee optimistic päivitys vain jos klikattu
 async function markRead(id: string) {
+  if (!canWrite) { toast.error("Kirjaudu sisään merkataksesi ilmoituksia luetuiksi"); return; }
   setItems((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
   const { error } = await supabase.from("notifications").update({ is_read: true }).eq("id", id);
   if (error) {
-    console.error(error);
+    logError("notifications markRead FAILED", error);
     toast.error("Merkintä epäonnistui");
   }
 }
