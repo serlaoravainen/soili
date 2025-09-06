@@ -76,24 +76,27 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
           reason,
           message,
           status,
-          submitted_at
+          submitted_at,
+          employees!absences_employee_id_fkey ( name )
         `)
         .eq("employee_id", currentEmployee.id)
         .order("submitted_at", { ascending: false });
-if (!error && data) {
-  setTimeOffRequests(
-    data.map((r: TimeOffRow) => ({
-      id: r.id,
-      employeeId: r.employee_id,
-      startDate: r.start_date,
-      endDate: r.end_date,
-      reason: r.reason ?? '',
-      message: r.message ?? undefined,
-      status: r.status,
-      submittedAt: r.submitted_at,
-    }))
-  );
-}
+
+      if (!error && data) {
+        setTimeOffRequests(
+          data.map((r: any) => ({
+            id: r.id,
+            employeeId: r.employee_id,
+            employeeName: r.employees?.name ?? currentEmployee.name,
+            startDate: r.start_date,
+            endDate: r.end_date,
+            reason: r.reason ?? '',
+            message: r.message ?? undefined,
+            status: r.status,
+            submittedAt: r.submitted_at,
+          }))
+        );
+      }
 
     };
     fetchRequests();
@@ -105,16 +108,30 @@ if (!error && data) {
     const fetchShiftChanges = async () => {
       const { data, error } = await supabase
         .from("shift_change_requests")
-        .select("*")
+        .select(`
+          id,
+          employee_id,
+          target_employee_id,
+          current_shift_date,
+          requested_shift_date,
+          reason,
+          message,
+          status,
+          submitted_at,
+          employee:employees!shift_change_requests_employee_id_fkey ( name ),
+          target:employees!shift_change_requests_target_employee_id_fkey ( name )
+        `)
         .eq("employee_id", currentEmployee.id)
         .order("submitted_at", { ascending: false });
+
       if (!error && data) {
         setShiftChangeRequests(
-          data.map((r: ShiftChangeRow) => ({
+          data.map((r: any) => ({
             id: r.id,
             employeeId: r.employee_id,
-            employeeName: currentEmployee.name,
+            employeeName: r.employee?.name ?? currentEmployee.name,
             targetEmployeeId: r.target_employee_id ?? undefined,
+            targetEmployeeName: r.target?.name ?? undefined,
             currentDate: r.current_shift_date,
             requestedDate: r.requested_shift_date,
             reason: r.reason ?? '',
@@ -226,6 +243,7 @@ if (!error && data) {
           employeeId: data.employee_id,
           employeeName: currentEmployee.name,
           targetEmployeeId: data.target_employee_id ?? undefined,
+          targetEmployeeName: allEmployees.find(e => e.id === data.target_employee_id)?.name,
           currentDate: data.current_shift_date,
           requestedDate: data.requested_shift_date,
           reason: data.reason ?? '',

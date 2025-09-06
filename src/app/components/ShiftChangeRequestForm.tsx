@@ -13,7 +13,12 @@ import { toast } from 'sonner';
 interface ShiftChangeRequestFormProps {
   currentEmployee: Employee;
   allEmployees: Employee[];
-  onSubmit: (request: Omit<ShiftChangeRequest, 'id' | 'employeeId' | 'employeeName' | 'submittedAt' | 'status'>) => void;
+    onSubmit: (
+    request: Omit<
+      ShiftChangeRequest,
+      "id" | "employeeId" | "submittedAt" | "status"
+    >
+  ) => void;
 }
 
 const ShiftChangeRequestForm: React.FC<ShiftChangeRequestFormProps> = ({ 
@@ -125,13 +130,14 @@ const ShiftChangeRequestForm: React.FC<ShiftChangeRequestFormProps> = ({
 
     onSubmit({
       currentDate: formData.currentDate,
-      currentShift,
       requestedDate: formData.requestedDate,
+      currentShift,
       requestedShift,
       reason: formData.reason,
       message: formData.message || undefined,
       targetEmployeeId,
-      targetEmployeeName
+      targetEmployeeName,
+      employeeName: currentEmployee.name
     });
 
     // Reset form
