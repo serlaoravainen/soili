@@ -15,7 +15,7 @@ import {
   AlertCircle,
   Home
 } from 'lucide-react';
-import { Employee, EmployeeTimeOffRequest, ShiftChangeRequest, EmployeeNotification, TimePeriod, AppSettings } from '../types';
+import { Employee, EmployeeTimeOffRequest, ShiftChangeRequest, EmployeeNotification, TimePeriod, AppSettings, ShiftType } from '../types';
 import EmployeeScheduleView from './EmployeeScheduleView';
 import TimeOffRequestForm from './TimeOffRequestForm';
 import ShiftChangeRequestForm from './ShiftChangeRequestForm';
@@ -48,6 +48,18 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   status: 'pending' | 'approved' | 'declined';
   submitted_at: string;
 };
+
+  type ShiftChangeRow = {
+    id: string;
+    employee_id: string;
+    target_employee_id: string | null;
+    current_shift_date: string;
+    requested_shift_date: string;
+    reason: string | null;
+    message: string | null;
+    status: 'pending' | 'approved' | 'declined';
+    submitted_at: string;
+  };
 
 
 
@@ -96,7 +108,24 @@ if (!error && data) {
         .select("*")
         .eq("employee_id", currentEmployee.id)
         .order("submitted_at", { ascending: false });
-      if (!error && data) setShiftChangeRequests(data);
+      if (!error && data) {
+        setShiftChangeRequests(
+          data.map((r: ShiftChangeRow) => ({
+            id: r.id,
+            employeeId: r.employee_id,
+            employeeName: currentEmployee.name,
+            targetEmployeeId: r.target_employee_id ?? undefined,
+            currentDate: r.current_shift_date,
+            requestedDate: r.requested_shift_date,
+            reason: r.reason ?? '',
+            message: r.message ?? undefined,
+            status: r.status,
+            submittedAt: r.submitted_at,
+            currentShift: { type: 'normal', hours: 0 } as ShiftType,
+            requestedShift: { type: 'normal', hours: 0 } as ShiftType
+          }))
+        );
+      }
     };
     fetchShiftChanges();
   }, [currentEmployee.id]);
@@ -191,7 +220,23 @@ if (!error && data) {
       .single();
 
     if (!error && data) {
-      setShiftChangeRequests(prev => [data as ShiftChangeRequest, ...prev]);
+      setShiftChangeRequests(prev => [
+        {
+          id: data.id,
+          employeeId: data.employee_id,
+          employeeName: currentEmployee.name,
+          targetEmployeeId: data.target_employee_id ?? undefined,
+          currentDate: data.current_shift_date,
+          requestedDate: data.requested_shift_date,
+          reason: data.reason ?? '',
+          message: data.message ?? undefined,
+          status: data.status,
+          submittedAt: data.submitted_at,
+          currentShift: { type: 'normal', hours: 0 },
+          requestedShift: { type: 'normal', hours: 0 }
+        },
+        ...prev,
+      ]);
     }
   };
 
