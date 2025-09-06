@@ -59,6 +59,14 @@
 ```
 
 
+## supabase/functions/soili-code/index.ts
+**Miksi tärkeä:** Keskeinen Soili-komponentti.
+
+```txt
+
+```
+
+
 ## src/lib/sendEmail.ts
 **Miksi tärkeä:** Keskeinen Soili-komponentti.
 
@@ -188,14 +196,6 @@
 
 
 ## src/app/components/ui/popover.tsx
-**Miksi tärkeä:** Keskeinen Soili-komponentti.
-
-```txt
-
-```
-
-
-## src/app/components/ui/scroll-area.tsx
 **Miksi tärkeä:** Keskeinen Soili-komponentti.
 
 ```txt

@@ -3,6 +3,14 @@
 > Tämä on kuratoitu tietoisku. Vastaukset tulee ankkuroida näihin tiedostoihin. Jos tieto puuttuu, sano suoraan.
 
 
+## src/app/components/ui/scroll-area.tsx
+**Miksi tärkeä:** Keskeinen Soili-komponentti.
+
+```txt
+
+```
+
+
 ## src/lib/pushClient.ts
 **Miksi tärkeä:** Keskeinen Soili-komponentti.
 
