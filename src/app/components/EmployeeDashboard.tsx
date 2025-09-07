@@ -17,7 +17,7 @@ import {
   AlertCircle,
   Home
 } from 'lucide-react';
-import { Employee, EmployeeTimeOffRequest, ShiftChangeRequest, EmployeeNotification, TimePeriod, AppSettings, ShiftType } from '../types';
+import { Employee, EmployeeTimeOffRequest, ShiftChangeRequest, EmployeeNotification, ShiftType } from '../types';
 import EmployeeScheduleView from './EmployeeScheduleView';
 import TimeOffRequestForm from './TimeOffRequestForm';
 import ShiftChangeRequestForm from './ShiftChangeRequestForm';
@@ -55,16 +55,12 @@ type ShiftChangeRow = {
 interface EmployeeDashboardProps {
   currentEmployee: Employee;
   allEmployees: Employee[];
-  settings: AppSettings;
-  timePeriod: TimePeriod;
   onSwitchToAdmin: () => void;
 }
 
 const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   currentEmployee,
   allEmployees,
-  settings,
-  timePeriod,
   onSwitchToAdmin
 }) => {
   const [activeTab, setActiveTab] = useState('schedule');
@@ -110,7 +106,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
     fetchRequests();
   }, [currentEmployee.id, currentEmployee.name]);
 
-  const [shiftChangeRequests, setShiftChangeRequests] = useState<ShiftChangeRequest[]>([]);
+  const [shiftChangeRequests, setShiftChangeRequests] = useState<ShiftChangeRequest[]>(() => []);
 
   useEffect(() => {
     const fetchShiftChanges = async () => {
@@ -156,7 +152,7 @@ setShiftChangeRequests(
     fetchShiftChanges();
   }, [currentEmployee.id, currentEmployee.name]);
 
-  const [notifications, setNotifications] = useState<EmployeeNotification[]>([]);
+  const [notifications, setNotifications] = useState<EmployeeNotification[]>(() => []);
 
   useEffect(() => {
     const fetchNotifications = async () => {
@@ -174,9 +170,9 @@ setShiftChangeRequests(
   const unreadNotifications = notifications.filter(n => !n.isRead).length;
 
 
-  const totalHoursThisWeek = currentEmployee.shifts
-    .slice(0, 7)
-    .reduce((total, shift) => total + (shift.hours || 0), 0);
+ const totalHoursThisWeek = (currentEmployee.shifts ?? [])
+   .slice(0, 7)
+   .reduce((total, shift) => total + (shift.hours || 0), 0);
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('fi-FI', {
@@ -414,8 +410,8 @@ setShiftChangeRequests(
             <EmployeeScheduleView 
               currentEmployee={currentEmployee}
               allEmployees={allEmployees}
-              timePeriod={timePeriod}
-              settings={settings}
+              settings={{ general: { weekStartDay: "monday", dateFormat: "dd.mm.yyyy" } }}
+              timePeriod={{ name: "Testijakso", startDate: "2025-09-01", endDate: "2025-09-30" } as any}
             />
           </TabsContent>
 

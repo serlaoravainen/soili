@@ -97,15 +97,14 @@ useEffect(() => {
     const dayOfWeek = startDate.getDay();
     let daysToStart: number;
     
-    if (settings.general.weekStartDay === 'monday') {
+    const startDaySetting = settings?.general?.weekStartDay ?? 'monday';
+    if (startDaySetting === 'monday') {
       daysToStart = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     } else {
       daysToStart = dayOfWeek;
     }
-    
-    startDate.setDate(startDate.getDate() - daysToStart);
 
-    const dayNames = settings.general.weekStartDay === 'monday' 
+    const dayNames = startDaySetting === 'monday'
       ? ['MA', 'TI', 'KE', 'TO', 'PE', 'LA', 'SU']
       : ['SU', 'MA', 'TI', 'KE', 'TO', 'PE', 'LA'];
 
@@ -123,7 +122,8 @@ useEffect(() => {
       const day = date.getDate();
       const month = date.getMonth() + 1;
       
-      switch (settings.general.dateFormat) {
+      const formatSetting = settings?.general?.dateFormat ?? 'dd.mm.yyyy';
+      switch (formatSetting) {
         case 'mm/dd/yyyy':
           dateStr = `${month}/${day}`;
           break;
@@ -146,7 +146,7 @@ useEffect(() => {
     return dates;
   };
 
-  const dates = generateDates(timePeriod);
+  const dates = generateDates(7);
 
   // Filter employees to show
   const displayEmployees = (showAllEmployees 
@@ -194,14 +194,14 @@ useEffect(() => {
     }
   };
 
-  const getTotalHours = (employee: Employee) => {
-    return employee.shifts.reduce((total, shift) => {
+ const getTotalHours = (employee: Employee) => {
+   return (employee.shifts ?? []).reduce((total, shift) => {
       return total + (shift.hours || 0);
     }, 0);
   };
 
   const currentEmployeeTotalHours = getTotalHours(currentEmployee);
-  const gridCols = `grid-cols-${Math.min(timePeriod + 1, 12)}`;
+  const gridCols = `grid-cols-${Math.min(7 + 1, 12)}`;
 
   return (
     <div className="space-y-6">
@@ -212,7 +212,7 @@ useEffect(() => {
             <div className="flex items-center space-x-3">
               <Calendar className="w-6 h-6 text-primary" />
               <CardTitle className="text-xl text-primary">
-                Työvuorot ({timePeriod} päivää)
+                Työvuorot (7 päivää)
               </CardTitle>
             </div>
             <div className="flex items-center gap-4">
@@ -294,7 +294,7 @@ useEffect(() => {
                           {getTotalHours(employee)}h
                         </Badge>
                       </div>
-                      {employee.shifts.slice(0, timePeriod).map((shift, dayIndex) => {
+                      {(employee.shifts ?? []).slice(0, 7).map((shift, dayIndex) => {
                         const shiftDisplay = getShiftDisplay(shift, isCurrentEmployee);
                         const isToday = dates[dayIndex]?.fullDate.toDateString() === new Date().toDateString();
                         
@@ -370,13 +370,13 @@ useEffect(() => {
             </div>
             <div className="text-center p-4 border border-border rounded-lg">
               <div className="text-2xl font-bold">
-                {currentEmployee.shifts.filter(s => s.type !== 'empty').length}
+                {(currentEmployee.shifts ?? []).filter(s => s.type !== 'empty').length}
               </div>
               <div className="text-sm text-muted-foreground">Työvuoroja</div>
             </div>
             <div className="text-center p-4 border border-border rounded-lg">
               <div className="text-2xl font-bold">
-                {timePeriod - currentEmployee.shifts.filter(s => s.type !== 'empty').length}
+                {7 - ((currentEmployee.shifts ?? []).filter(s => s.type !== 'empty').length)}
               </div>
               <div className="text-sm text-muted-foreground">Vapaapäiviä</div>
             </div>
