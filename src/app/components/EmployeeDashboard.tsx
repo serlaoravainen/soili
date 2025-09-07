@@ -1,3 +1,5 @@
+"use client";
+
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supaBaseClient';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -21,6 +23,35 @@ import TimeOffRequestForm from './TimeOffRequestForm';
 import ShiftChangeRequestForm from './ShiftChangeRequestForm';
 import EmployeeNotificationCenter from './EmployeeNotificationCenter';
 
+type TimeOffRow = {
+  id: string;
+  employee_id: string;
+  employee?: { name: string }[];
+  target?: { name: string }[];
+  start_date: string;
+  end_date: string;
+  reason?: string | null;
+  message?: string | null;
+  status: "pending" | "approved" | "declined";
+  submitted_at: string;
+};
+
+type ShiftChangeRow = {
+  id: string;
+  employee_id: string;
+  employee?: { name: string }[];   // korjattu: array
+  target_employee_id?: string;
+  target?: { name: string }[];     // korjattu: array
+  current_shift_date: string;
+  requested_shift_date: string;
+  reason?: string | null;
+  message?: string | null;
+  status: "pending" | "approved" | "declined";
+  submitted_at: string;
+};
+
+
+
 interface EmployeeDashboardProps {
   currentEmployee: Employee;
   allEmployees: Employee[];
@@ -37,30 +68,6 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   onSwitchToAdmin
 }) => {
   const [activeTab, setActiveTab] = useState('schedule');
-
-  type TimeOffRow = {
-  id: string;
-  employee_id: string;
-  start_date: string;
-  end_date: string;
-  reason: string | null;
-  message: string | null;
-  status: 'pending' | 'approved' | 'declined';
-  submitted_at: string;
-};
-
-  type ShiftChangeRow = {
-    id: string;
-    employee_id: string;
-    target_employee_id: string | null;
-    current_shift_date: string;
-    requested_shift_date: string;
-    reason: string | null;
-    message: string | null;
-    status: 'pending' | 'approved' | 'declined';
-    submitted_at: string;
-  };
-
 
 
   const [timeOffRequests, setTimeOffRequests] = useState<EmployeeTimeOffRequest[]>([]);
@@ -84,10 +91,11 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
 
       if (!error && data) {
         setTimeOffRequests(
-          data.map((r: any) => ({
+          data.map((r: TimeOffRow) => ({
             id: r.id,
             employeeId: r.employee_id,
-            employeeName: r.employees?.name ?? currentEmployee.name,
+            employeeName: r.employee?.[0]?.name ?? currentEmployee.name,
+            targetEmployeeName: r.target?.[0]?.name ?? undefined,
             startDate: r.start_date,
             endDate: r.end_date,
             reason: r.reason ?? '',
@@ -100,7 +108,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
 
     };
     fetchRequests();
-  }, [currentEmployee.id]);
+  }, [currentEmployee.id, currentEmployee.name]);
 
   const [shiftChangeRequests, setShiftChangeRequests] = useState<ShiftChangeRequest[]>([]);
 
@@ -125,27 +133,28 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
         .order("submitted_at", { ascending: false });
 
       if (!error && data) {
-        setShiftChangeRequests(
-          data.map((r: any) => ({
-            id: r.id,
-            employeeId: r.employee_id,
-            employeeName: r.employee?.name ?? currentEmployee.name,
-            targetEmployeeId: r.target_employee_id ?? undefined,
-            targetEmployeeName: r.target?.name ?? undefined,
-            currentDate: r.current_shift_date,
-            requestedDate: r.requested_shift_date,
-            reason: r.reason ?? '',
-            message: r.message ?? undefined,
-            status: r.status,
-            submittedAt: r.submitted_at,
-            currentShift: { type: 'normal', hours: 0 } as ShiftType,
-            requestedShift: { type: 'normal', hours: 0 } as ShiftType
-          }))
-        );
+setShiftChangeRequests(
+  data.map((r: ShiftChangeRow) => ({
+    id: r.id,
+    employeeId: r.employee_id,
+    employeeName: r.employee?.[0]?.name ?? currentEmployee.name,
+    targetEmployeeId: r.target_employee_id ?? undefined,
+    targetEmployeeName: r.target?.[0]?.name ?? undefined,
+    currentDate: r.current_shift_date,
+    requestedDate: r.requested_shift_date,
+    reason: r.reason ?? "",
+    message: r.message ?? undefined,
+    status: r.status,
+    submittedAt: r.submitted_at,
+    currentShift: { type: "normal", hours: 0 } as ShiftType,
+    requestedShift: { type: "normal", hours: 0 } as ShiftType,
+  }))
+);
+
       }
     };
     fetchShiftChanges();
-  }, [currentEmployee.id]);
+  }, [currentEmployee.id, currentEmployee.name]);
 
   const [notifications, setNotifications] = useState<EmployeeNotification[]>([]);
 
@@ -208,6 +217,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
         {
           id: data.id,
           employeeId: data.employee_id,
+          employeeName: currentEmployee.name,
           startDate: data.start_date,
           endDate: data.end_date,
           reason: data.reason,
@@ -233,7 +243,19 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
         reason: request.reason,
         message: request.message
       }])
-      .select()
+      .select(`
+        id,
+        employee_id,
+        target_employee_id,
+        current_shift_date,
+        requested_shift_date,
+        reason,
+        message,
+        status,
+        submitted_at,
+        employee:employees!shift_change_requests_employee_id_fkey ( name ),
+        target:employees!shift_change_requests_target_employee_id_fkey ( name )
+      `)
       .single();
 
     if (!error && data) {
@@ -241,9 +263,8 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
         {
           id: data.id,
           employeeId: data.employee_id,
-          employeeName: currentEmployee.name,
-          targetEmployeeId: data.target_employee_id ?? undefined,
-          targetEmployeeName: allEmployees.find(e => e.id === data.target_employee_id)?.name,
+          employeeName: data.employee?.[0]?.name ?? currentEmployee.name,
+          targetEmployeeName: data.target?.[0]?.name ?? undefined,
           currentDate: data.current_shift_date,
           requestedDate: data.requested_shift_date,
           reason: data.reason ?? '',

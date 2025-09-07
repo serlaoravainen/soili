@@ -18,11 +18,12 @@ export function normalizeError(err: unknown): NormalizedError {
       name: "HTTPError",
       message: `HTTP ${err.status} ${err.statusText ?? ""}`.trim(),
       status: err.status,
-      extra: { url: (err as any).url },
+      extra: err instanceof Response ? { url: err.url } : undefined,
     };
   }
+
   if (err instanceof Error) {
-    const cause = (err as any).cause;
+    const { cause } = err as { cause?: unknown };
     return {
       name: err.name || "Error",
       message: err.message || "Unknown error",
@@ -30,15 +31,22 @@ export function normalizeError(err: unknown): NormalizedError {
       cause,
     };
   }
+
   if (typeof err === "object" && err !== null) {
-    const anyErr = err as Record<string, unknown>;
-    const name = typeof anyErr.name === "string" ? anyErr.name : "UnknownObjectError";
-    const message = typeof anyErr.message === "string" ? anyErr.message : JSON.stringify(anyErr);
-    return { name, message, extra: anyErr };
+    const obj = err as Record<string, unknown>;
+    const name =
+      typeof obj.name === "string" ? obj.name : "UnknownObjectError";
+    const message =
+      typeof obj.message === "string"
+        ? obj.message
+        : JSON.stringify(obj);
+    return { name, message, extra: obj };
   }
+
   if (typeof err === "string") {
     return { name: "StringError", message: err };
   }
+
   return { name: "Unknown", message: String(err) };
 }
 

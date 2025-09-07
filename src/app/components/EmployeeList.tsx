@@ -110,6 +110,18 @@ async function handleAddEmployee() {
     return;
   }
 
+  // 1) Luo Supabase Auth -käyttäjä
+  const { data: userData, error: userError } = await supabase.auth.admin.createUser({
+    email,
+    email_confirm: true,
+  });
+  if (userError || !userData?.user) {
+    console.error(userError);
+    toast.error("Käyttäjän luonti epäonnistui");
+    return;
+  }
+
+  // 2) Lisää työntekijä employees-tauluun
   const { data, error } = await supabase
     .from("employees")
     .insert([{
@@ -117,15 +129,17 @@ async function handleAddEmployee() {
       email,
       department: dep,
       is_active: newEmployee.isActive,
+      user_id: userData.user.id,
+      role: "employee",
     }])
     .select("id, name, email, department, is_active, created_at")
     .single();
 
-    if (error) {
-      console.error(error);
-      toast.error("Lisäys epäonnistui");
-      return;
-    }
+  if (error) {
+    console.error(error);
+    toast.error("Työntekijän lisääminen epäonnistui");
+    return;
+  }
 
     const added: Employee = {
       id: data.id,
@@ -139,7 +153,7 @@ async function handleAddEmployee() {
     setEmployees((prev) => [...prev, added]);
     setNewEmployee({ name: "", email: "", department: "", isActive: true });
     setIsAddDialogOpen(false);
-    toast.success(`${added.name} lisätty`);
+    toast.success(`${added.name} lisätty ja kirjautumislinkki lähetetty osoitteeseen ${added.email}`);
       
 
     await supabase.from("notifications").insert({

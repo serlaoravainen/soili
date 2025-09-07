@@ -81,6 +81,7 @@ const Toolbar = () => {
 
   const [isClient, setIsClient] = useState(false);
   useEffect(() => { setIsClient(true); }, []);
+  
 
   const START_ISO = useScheduleStore((s) => s.startDateISO);
   const DAYS = useScheduleStore((s) => s.days);
@@ -560,11 +561,6 @@ await supabase.from("notifications").insert({
   </Button>
 )}
 
-{lastSavedAt && (
-  <span className="text-xs text-muted-foreground ml-2">
-    Tallennettu {lastSavedAt}
-  </span>
-)}
 
 
 <div className="flex items-center gap-1">
