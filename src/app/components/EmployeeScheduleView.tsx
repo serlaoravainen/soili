@@ -18,6 +18,7 @@ type ShiftRow = {
   hours: number;
   type: 'normal' | 'locked' | 'absent' | 'holiday' | 'empty';
   is_locked: boolean;
+  published: boolean; // ✅ lisää tämä
 };
 
 
@@ -28,6 +29,11 @@ interface EmployeeScheduleViewProps {
   settings: AppSettings;
 }
 
+
+type EmployeeWithMappedShifts = Omit<Employee, "shifts"> & {
+  shifts: Record<string, ShiftType>;
+};
+
 const EmployeeScheduleView: React.FC<EmployeeScheduleViewProps> = ({
   currentEmployee,
   allEmployees,
@@ -36,7 +42,7 @@ const EmployeeScheduleView: React.FC<EmployeeScheduleViewProps> = ({
 }) => {
   const [showAllEmployees, setShowAllEmployees] = useState(false);
 
-  const [employeeShifts, setEmployeeShifts] = useState<Record<string, ShiftType[]>>({});
+  const [employeeShifts, setEmployeeShifts] = useState<Record<string, Record<string, ShiftType>>>({});
 
 useEffect(() => {
   const fetchShifts = async () => {
@@ -44,43 +50,35 @@ useEffect(() => {
       ? allEmployees.filter(e => e.isActive).map(e => e.id)
       : [currentEmployee.id];
 
-    const { data, error } = await supabase
-      .from("shifts")
-      .select("id, employee_id, work_date, hours, type, is_locked")
-      .in("employee_id", employeeIds)
-      .order("work_date", { ascending: true });
+const { data, error } = await supabase
+  .from("shifts")
+  .select("employee_id, work_date, hours, type, is_locked, published") // julkaisu mukana
+  .gte("work_date", dates[0].fullDate.toISOString().slice(0, 10))
+  .lte("work_date", dates[timePeriod - 1].fullDate.toISOString().slice(0, 10))
+  .eq("published", true);
 
-    if (error) {
-      console.error("Error fetching shifts", error);
-      return;
-    }
 
-    // Ryhmittele shiftit työntekijän mukaan
-    const grouped: Record<string, ShiftType[]> = {};
-    employeeIds.forEach(id => { grouped[id] = []; });
+      if (!error && data) {
+        const grouped: Record<string, Record<string, ShiftType>> = {};
+        data.forEach((shift) => {
+const type: ShiftType["type"] =
+  shift.type === "normal"
+    ? "normal"
+    : shift.type === "vacation"
+    ? "holiday" // mappaa lomaan
+    : shift.type === "sick"
+    ? "absent"  // mappaa poissaoloon
+    : "empty";
 
-    if (data) {
-      data.forEach((raw) => {
-        const shift: ShiftRow = {
-          id: raw.id,
-          employee_id: raw.employee_id,
-          work_date: raw.work_date,
-          hours: raw.hours,
-          type: raw.type as ShiftType["type"],
-          is_locked: raw.is_locked,
-        };
 
-        let type: ShiftType["type"] = shift.type;
-        if (shift.is_locked) type = "locked";
-
-        grouped[shift.employee_id].push({
-          type,
-          hours: shift.hours,
+          if (!grouped[shift.employee_id]) grouped[shift.employee_id] = {};
+          grouped[shift.employee_id][shift.work_date] = {
+            type,
+            hours: shift.hours,
+          };
         });
-      });
-
-      setEmployeeShifts(grouped);
-    }
+        setEmployeeShifts(grouped);
+      }
   };
 
   fetchShifts();
@@ -146,19 +144,19 @@ useEffect(() => {
     return dates;
   };
 
-  const dates = generateDates(7);
+  const dates = generateDates(timePeriod);
+
 
   // Filter employees to show
-  const displayEmployees = (showAllEmployees 
-    ? allEmployees.filter(emp => emp.isActive) 
-    : [currentEmployee]
-  ).map(emp => ({
-    ...emp,
-    shifts: employeeShifts[emp.id] || [],
-  }));
+  const displayEmployees = showAllEmployees ? allEmployees : [currentEmployee];
+const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((emp) => ({
+  ...emp,
+  shifts: employeeShifts[emp.id] || {},
+}));
 
   const getShiftDisplay = (shift: ShiftType, isCurrentEmployee: boolean = false) => {
-    const baseStyle = isCurrentEmployee ? 'ring-2 ring-primary ring-offset-2' : '';
+    const baseStyle = '';
+
     
     switch (shift.type) {
       case 'normal':
@@ -194,13 +192,13 @@ useEffect(() => {
     }
   };
 
- const getTotalHours = (employee: Employee) => {
-   return (employee.shifts ?? []).reduce((total, shift) => {
-      return total + (shift.hours || 0);
-    }, 0);
-  };
+ const getTotalHours = (shifts: Record<string, ShiftType>) => {
+   return Object.values(shifts).reduce((total, shift) => {
+     return total + (shift.hours || 0);
+   }, 0);
+ };
 
-  const currentEmployeeTotalHours = getTotalHours(currentEmployee);
+ const currentEmployeeTotalHours = getTotalHours(employeeShifts[currentEmployee.id] || {});
   const gridCols = `grid-cols-${Math.min(7 + 1, 12)}`;
 
   return (
@@ -270,14 +268,14 @@ useEffect(() => {
 
               {/* Employee Rows */}
               <div className="divide-y divide-border">
-                {displayEmployees.map((employee) => {
+                {employeesWithShifts.map((employee) => {
                   const isCurrentEmployee = employee.id === currentEmployee.id;
                   return (
                     <div 
                       key={employee.id} 
                       className={`grid gap-px ${gridCols} transition-colors ${
-                        isCurrentEmployee ? 'bg-primary/5 hover:bg-primary/10' : 'hover:bg-accent/30'
-                      }`} 
+                      isCurrentEmployee ? 'bg-primary/5' : ''
+                      } hover:bg-accent/30`} 
                       style={{ gridTemplateColumns: `200px repeat(${timePeriod}, 1fr)` }}
                     >
                       <div className="p-4 bg-background flex items-center justify-between">
@@ -291,13 +289,15 @@ useEffect(() => {
                           <div className="text-xs text-muted-foreground">{employee.department}</div>
                         </div>
                         <Badge variant="outline" className="text-xs">
-                          {getTotalHours(employee)}h
+                          {getTotalHours(employee.shifts)}h
                         </Badge>
                       </div>
-                      {(employee.shifts ?? []).slice(0, 7).map((shift, dayIndex) => {
+                      {dates.map((d, dayIndex) => {
+                        const dateKey = d.fullDate.toISOString().slice(0, 10);
+                        const shift = employee.shifts[dateKey] || { type: "empty", hours: 0 };
                         const shiftDisplay = getShiftDisplay(shift, isCurrentEmployee);
-                        const isToday = dates[dayIndex]?.fullDate.toDateString() === new Date().toDateString();
-                        
+                        const isToday = d.fullDate.toDateString() === new Date().toDateString();
+
                         return (
                           <div
                             key={dayIndex}
@@ -305,10 +305,9 @@ useEffect(() => {
                               h-16 p-2 m-0 rounded-none border-0 
                               flex items-center justify-center min-w-[80px]
                               ${shiftDisplay.color}
-                              ${isToday ? 'ring-1 ring-blue-400' : ''}
                               transition-all duration-200
                             `}
-                            title={`${employee.name} - ${dates[dayIndex]?.day} ${dates[dayIndex]?.date}${shift.type === 'normal' ? ` (${shift.hours}h)` : shift.type === 'empty' ? ' - Vapaa' : ''}`}
+                            title={`${employee.name} - ${d.day} ${d.date}${shift.type === 'normal' ? ` (${shift.hours}h)` : shift.type === 'empty' ? ' - Vapaa' : ''}`}
                           >
                             <div className="flex flex-col items-center space-y-1">
                               {shiftDisplay.icon}
@@ -331,20 +330,23 @@ useEffect(() => {
                     <div className="p-4 bg-background">
                       <div className="flex items-center space-x-2">
                         <Users className="w-4 h-4 text-muted-foreground" />
-                        <span className="font-medium text-sm">Yhteensä ({displayEmployees.length} työntekijää)</span>
+                        <span className="font-medium text-sm">Yhteensä ({employeesWithShifts.length} työntekijää)</span>
                       </div>
                     </div>
                     {dates.map((_, dayIndex) => {
-                      const dayTotal = displayEmployees.reduce((total, employee) => {
-                        const shift = employee.shifts[dayIndex];
+                      const dateKey = dates[dayIndex].fullDate.toISOString().slice(0, 10);
+                      const dayTotal = employeesWithShifts.reduce((total, employee) => {
+                        const shift = employee.shifts[dateKey];
                         return total + (shift?.hours || 0);
                       }, 0);
-                      
+
+                      const countEmployees = employeesWithShifts.filter(emp => emp.shifts[dateKey]?.type !== 'empty').length;
+
                       return (
                         <div key={dayIndex} className="p-3 bg-background text-center min-w-[80px]">
                           <div className="text-sm font-semibold text-primary">{dayTotal}h</div>
                           <div className="text-xs text-muted-foreground">
-                            {displayEmployees.filter(emp => emp.shifts[dayIndex]?.type !== 'empty').length} henkilöä
+                            {countEmployees} henkilöä
                           </div>
                         </div>
                       );

@@ -22,6 +22,7 @@ import EmployeeScheduleView from './EmployeeScheduleView';
 import TimeOffRequestForm from './TimeOffRequestForm';
 import ShiftChangeRequestForm from './ShiftChangeRequestForm';
 import EmployeeNotificationCenter from './EmployeeNotificationCenter';
+import EmployeeScheduleControls from './EmployeeScheduleControls';
 
 type TimeOffRow = {
   id: string;
@@ -64,6 +65,7 @@ const EmployeeDashboard: React.FC<EmployeeDashboardProps> = ({
   onSwitchToAdmin
 }) => {
   const [activeTab, setActiveTab] = useState('schedule');
+  const [days, setDays] = useState<7 | 14 | 30>(7);
 
 
   const [timeOffRequests, setTimeOffRequests] = useState<EmployeeTimeOffRequest[]>([]);
@@ -160,7 +162,7 @@ setShiftChangeRequests(
         .from("employee_notifications")
         .select("*")
         .eq("employee_id", currentEmployee.id)
-        .order("timestamp", { ascending: false });
+        .order("created_at", { ascending: false });
       if (!error && data) setNotifications(data);
     };
     fetchNotifications();
@@ -407,12 +409,23 @@ setShiftChangeRequests(
 
           {/* Schedule View Tab */}
           <TabsContent value="schedule" className="space-y-6">
-            <EmployeeScheduleView 
-              currentEmployee={currentEmployee}
-              allEmployees={allEmployees}
-              settings={{ general: { weekStartDay: "monday", dateFormat: "dd.mm.yyyy" } }}
-              timePeriod={{ name: "Testijakso", startDate: "2025-09-01", endDate: "2025-09-30" } as any}
-            />
+            <Card className="shadow-md">
+              <CardHeader className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="w-5 h-5" />
+                  Työvuorot
+                </CardTitle>
+                <EmployeeScheduleControls days={days} setDays={setDays} />
+              </CardHeader>
+              <CardContent>
+                <EmployeeScheduleView 
+                  currentEmployee={currentEmployee}
+                  allEmployees={allEmployees}
+                  settings={{ general: { weekStartDay: "monday", dateFormat: "dd.mm.yyyy" } }}
+                  timePeriod={days}
+                />
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Time Off Requests Tab */}

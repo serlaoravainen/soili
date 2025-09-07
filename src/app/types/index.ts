@@ -64,7 +64,7 @@ export interface EmployeeNotification {
   type: 'absence_approved' | 'absence_declined' | 'shift_approved' | 'shift_declined' | 'schedule_published' | 'schedule_updated' | 'reminder' | 'system';
   title: string;
   message: string;
-  timestamp: string;
+  created_at: string;
   isRead: boolean;
   priority: 'low' | 'medium' | 'high';
 }

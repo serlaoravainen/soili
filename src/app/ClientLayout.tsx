@@ -7,7 +7,7 @@ import AdminView from "@/app/components/AdminView";
 import Login from "@/app/components/Login";
 import ServiceWorkerRegister from "./ServiceWorkerRegister";
 import { Loader } from "lucide-react";
-import { Employee, AppSettings, TimePeriod } from "@/app/types";
+import { Employee } from "@/app/types";
 
 function EmployeeDashboardWrapper() {
   const [currentEmployee, setCurrentEmployee] = useState<Employee | null>(null);
@@ -16,22 +16,45 @@ function EmployeeDashboardWrapper() {
 
   useEffect(() => {
     const loadData = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         setLoading(false);
         return;
       }
-      const { data: employee } = await supabase
+
+      // 1. Kokeile hakea auth_user_id:llä
+      let { data: employee } = await supabase
         .from("employees")
         .select("*")
-        .eq("user_id", user.id)
-        .single();
+        .eq("auth_user_id", user.id)
+        .maybeSingle();
+
+      // 2. Jos ei löydy → fallback emaililla
+      if (!employee) {
+        const { data: employeeByEmail } = await supabase
+          .from("employees")
+          .select("*")
+          .eq("email", user.email)
+          .maybeSingle();
+        employee = employeeByEmail;
+      }
+
       setCurrentEmployee(employee as Employee);
 
       const { data: all } = await supabase.from("employees").select("*");
       setAllEmployees(all as Employee[]);
 
       setLoading(false);
+
+      // Poista Magic Link -hash URL:ista
+      if (
+        typeof window !== "undefined" &&
+        window.location.hash.includes("access_token")
+      ) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
     };
     loadData();
   }, []);
@@ -63,17 +86,32 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
 
   useEffect(() => {
     const loadUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         setRole(null);
         setLoading(false);
         return;
       }
-      const { data: profile } = await supabase
+
+      // 1. Hae auth_user_id:llä
+      let { data: profile } = await supabase
         .from("employees")
         .select("role")
-        .eq("user_id", user.id)
-        .single();
+        .eq("auth_user_id", user.id)
+        .maybeSingle();
+
+      // 2. Jos ei löydy → fallback emaililla
+      if (!profile) {
+        const { data: profileByEmail } = await supabase
+          .from("employees")
+          .select("role")
+          .eq("email", user.email)
+          .maybeSingle();
+        profile = profileByEmail;
+      }
+
       setRole(profile?.role ?? null);
       setLoading(false);
     };

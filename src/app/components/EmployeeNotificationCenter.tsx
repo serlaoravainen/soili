@@ -88,7 +88,7 @@ const EmployeeNotificationCenter: React.FC<EmployeeNotificationCenterProps> = ({
     if (a.isRead !== b.isRead) {
       return a.isRead ? 1 : -1;
     }
-    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
 
   const unreadCount = notifications.filter(n => !n.isRead).length;
@@ -157,7 +157,7 @@ const EmployeeNotificationCenter: React.FC<EmployeeNotificationCenterProps> = ({
                           </p>
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-muted-foreground">
-                              {formatNotificationTime(notification.timestamp)}
+                              {formatNotificationTime(notification.created_at)}
                             </span>
                             <div className="flex items-center gap-1">
                               {notification.priority === 'high' && (
