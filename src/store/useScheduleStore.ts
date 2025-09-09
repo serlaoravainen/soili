@@ -34,7 +34,7 @@ export type Filters = {
 type PendingChange = {
   employee_id: string;
   work_date: string;
-  minutes: number; // 0 => poista, >0 => upsert "normal"
+  minutes: number | null; // null => poista, >0 => upsert "normal"
 };
 
 
@@ -141,7 +141,7 @@ days: 10 as State["days"],
       for (const s of shifts) {
         map[keyOf(s.employee_id, s.work_date)] = {
           ...s,
-          minutes: s.minutes ?? 0,
+          minutes: s.minutes, // null pysyy nullina
           // Varmista että type on unionista (tai normal jos tuntematon)
           type:
             s.type === "normal" ||
@@ -163,36 +163,40 @@ days: 10 as State["days"],
       });
     },
 
-      applyCellChange: ({ employee_id, work_date, minutes }) => {
-      const m = typeof minutes === "number" ? minutes : 0;
-      const dateISO = normalizeDate(work_date);
-      const k = keyOf(employee_id, dateISO);
-      const { shiftsMap, pending, undoStack } = get();
+applyCellChange: ({ employee_id, work_date, minutes }) => {
+  const m = typeof minutes === "number" ? minutes : null;
+  const dateISO = normalizeDate(work_date);
+  const k = keyOf(employee_id, dateISO);
+  const { shiftsMap, pending, undoStack } = get();
 
-      const prev = shiftsMap[k];
+  const prev = shiftsMap[k];
+  const nextMap = { ...shiftsMap };
+  const nextPending = { ...pending };
 
-      const nextMap = { ...shiftsMap };
-      if (m === null || m <= 0) {
-        delete nextMap[k];
-      } else {
-        nextMap[k] = {
-          employee_id,
-          work_date: dateISO,
-          type: "normal",
-          minutes: m,
-        };
-      }
+if (minutes === null || minutes <= 0) {
+  delete nextMap[k]; 
+  nextPending[k] = { employee_id, work_date: dateISO, minutes: null }; // merkkaa poisto pendingiin
+} else {
+  nextMap[k] = {
+    employee_id,
+    work_date: dateISO,
+    type: "normal",
+    minutes,
+  };
+  nextPending[k] = { employee_id, work_date: dateISO, minutes };
+}
 
-      const nextPending = { ...pending, [k]: { employee_id, work_date: dateISO, minutes: m } };
 
-      set({
-        shiftsMap: nextMap,
-        pending: nextPending,
-        undoStack: [...undoStack, { employee_id, work_date, minutes: prev?.minutes ?? 0 }],
-        redoStack: [],
-        dirty: true,
-      });
-    },
+  set({
+    shiftsMap: nextMap,
+    pending: nextPending,
+    undoStack: [...undoStack, { employee_id, work_date, minutes: prev?.minutes ?? 0 }],
+    redoStack: [],
+    dirty: true,
+  });
+},
+
+
 
 setRange: (startISO, days) => set({ startDateISO: startISO, days }),
 setStartDate: (startDateISO: string) => set({ startDateISO }),
@@ -204,67 +208,62 @@ shiftRange: (deltaDays: number) => {
 },
 
 saveAll: async () => {
-  const { pending, saving } = get();
-  if (saving) {
-    console.log("SaveAll skipped: already running");
-    return;
-  }
-  const changes = Object.values(pending);
-  if (!changes.length) {
-    toast.info("Ei tallennettavia muutoksia");
+  if (get().saving) {
+    console.log("SaveAll already running");
     return;
   }
 
   set({ saving: true });
+
   try {
-    const upserts: ShiftRow[] = [];
-    const deletes: { employee_id: string; work_date: string }[] = [];
+    while (true) {
+      const { pending } = get();
+      const changes = Object.entries(pending);
+      if (!changes.length) break;
 
-    for (const c of changes) {
-      const dateISO = normalizeDate(c.work_date);
-      if (c.minutes <= 0) {
-        deletes.push({ employee_id: c.employee_id, work_date: dateISO });
-      } else {
-        upserts.push({
-          employee_id: c.employee_id,
-          work_date: dateISO,
-          type: "normal",
-          minutes: c.minutes ?? 0,
-        });
-      }
-    }
+      const upserts: ShiftRow[] = [];
+      const deletes: { employee_id: string; work_date: string }[] = [];
 
-    if (upserts.length) {
-      const { error } = await supabase.rpc("upsert_shifts_bulk", {
-        _rows: upserts,
-      });
-      if (error) throw error;
-    }
+      // kerätään tämän batchin rivit
+      const batchKeys: string[] = [];
 
-    // 2) Poistot (chunkattuna)
-    if (deletes.length) {
-      const byEmp = new Map<string, string[]>();
-      for (const d of deletes) {
-        const arr = byEmp.get(d.employee_id) ?? [];
-        arr.push(d.work_date);
-        byEmp.set(d.employee_id, arr);
-      }
+      for (const [key, c] of changes) {
+        batchKeys.push(key);
 
-      for (const [empId, dates] of byEmp.entries()) {
-        const chunkSize = 1000;
-        for (let i = 0; i < dates.length; i += chunkSize) {
-          const sub = dates.slice(i, i + chunkSize);
-          const res = await supabase
-            .from("shifts")
-            .delete()
-            .eq("employee_id", empId)
-            .in("work_date", sub);
-          if (res.error) throw res.error;
+        const dateISO = new Date(normalizeDate(c.work_date))
+          .toISOString()
+          .slice(0, 10);
+
+        if (c.minutes === null || c.minutes <= 0) {
+          deletes.push({ employee_id: c.employee_id, work_date: dateISO });
+        } else {
+          upserts.push({
+            employee_id: c.employee_id,
+            work_date: dateISO,
+            type: "normal",
+            minutes: c.minutes,
+          });
         }
       }
+
+      console.log("SAVEALL BULK DEBUG", { deletes, upserts });
+
+      const { error } = await supabase.rpc("save_shifts_bulk", {
+        _deletes: deletes,
+        _upserts: upserts,
+      });
+      if (error) throw error;
+
+      // ✅ poista käsitellyt rivit pendingistä
+      set((state) => {
+        const nextPending = { ...state.pending };
+        for (const k of batchKeys) {
+          delete nextPending[k];
+        }
+        return { pending: nextPending, dirty: Object.keys(nextPending).length > 0 };
+      });
     }
 
-    set({ pending: {}, dirty: false });
     toast.success("Tallennettu");
   } catch (e) {
     console.error("saveAll error:", e);
@@ -273,6 +272,9 @@ saveAll: async () => {
     set({ saving: false });
   }
 },
+
+
+
 
 publishShifts: async () => {
   try {
@@ -285,7 +287,7 @@ publishShifts: async () => {
     endDate.setDate(endDate.getDate() + days - 1);
     const endISO = endDate.toISOString().slice(0, 10);
 
-    const { error } = await supabase.rpc("publish_shifts", {
+    const { error } = await supabase.rpc("publish_shifts_instant", {
       _start_date: startDateISO,
       _end_date: endISO,
     });
@@ -332,7 +334,7 @@ unpublishShifts: async () => {
 
       // Palauta entinen tuntimäärä
       const nextMap = { ...shiftsMap };
-      if (!last.minutes || last.minutes <= 0) {
+        if (last.minutes === null || last.minutes <= 0) {
         delete nextMap[k];
       } else {
         nextMap[k] = {
@@ -344,13 +346,13 @@ unpublishShifts: async () => {
       }
 
       // Päivitä pending vastaamaan undo-tilaa
-      const nextPending = { ...pending, [k]: { employee_id: last.employee_id, work_date: last.work_date, minutes: last.minutes ?? 0 } };
+      const nextPending = { ...pending, [k]: { employee_id: last.employee_id, work_date: last.work_date, minutes: last.minutes } };
 
       // Siirrä nykyinen tila redo-pinon itemiksi
       const redoItem: PendingChange = {
         employee_id: last.employee_id,
         work_date: last.work_date,
-        minutes: current?.minutes ?? 0,
+        minutes: current?.minutes ?? null,
       };
 
       set({
@@ -371,7 +373,7 @@ unpublishShifts: async () => {
       const prev = shiftsMap[k];
 
       const nextMap = { ...shiftsMap };
-      if (!next.minutes || next.minutes <= 0) {
+      if (next.minutes === null || next.minutes <= 0) {
         delete nextMap[k];
       } else {
         nextMap[k] = {

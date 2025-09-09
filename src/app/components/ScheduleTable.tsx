@@ -432,7 +432,7 @@ function handleCellClick(employeeId: string, dayIndex: number, minutes: number |
     `}
     onDoubleClick={() => {
       if (!absence) {
-        handleCellClick(employee.id, dayIndex, 0); // poisto
+        handleCellClick(employee.id, dayIndex, null); // poisto selkeästi
       }
     }}
   >
@@ -532,20 +532,15 @@ function handleCellClick(employeeId: string, dayIndex: number, minutes: number |
     {/* Poista vuoro */}
     <div className="flex justify-center">
       <Button
-        variant="ghost"
+        variant="destructive"
         size="sm"
         onClick={() => {
-          handleCellClick(employee.id, dayIndex, 0);
+          handleCellClick(employee.id, dayIndex, null);
           setOpenPopover(null);
         }}
-        className="text-destructive"
       >
-        Poista (0h)
+        Poista vuoro
       </Button>
-    </div>
-
-    <div className="text-xs text-muted-foreground text-center">
-      Vinkki: 0h poistaa vuoron.
     </div>
   </PopoverContent>
 )}
@@ -629,11 +624,6 @@ function handleCellClick(employeeId: string, dayIndex: number, minutes: number |
         </div>
       </CardContent>
     </Card>
-
-    {/* Footer Note */}
-    <div className="text-center text-xs text-muted-foreground bg-muted/30 p-3 rounded-lg">
-      Vinkki: klikkaa solua → valitse tunnit. 0h poistaa vuoron.
-    </div>
   </div>
 );
 }
