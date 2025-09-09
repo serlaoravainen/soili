@@ -139,7 +139,12 @@ const dates: DateCell[] = useMemo(() => {
   return Array.from({ length: days }).map((_, i): DateCell => {
     const iso = addDaysISO(alignedStart, i);
     const d = new Date(iso + "T00:00:00Z");
-    return { day: fiWeekdayShort(d), date: fiDayMonth(d), iso };
+    return { 
+      day: fiWeekdayShort(d), 
+      date: fiDayMonth(d), 
+      iso,
+      fullDate: d // 👈 tämä puuttui
+    };
   });
 }, [alignedStart, days]);
 
@@ -173,7 +178,7 @@ useEffect(() => {
 
       const { data: s, error: sErr } = await supabase
         .from("shifts")
-        .select("employee_id, work_date, type, hours")
+        .select("employee_id, work_date, type, minutes")
         .gte("work_date", dates[0].iso)
         .lte("work_date", dates[dates.length - 1].iso)
         .in("employee_id", mappedEmp.map((e) => e.id));
@@ -186,7 +191,7 @@ useEffect(() => {
           employee_id: r.employee_id,
           work_date: r.work_date,
           type: r.type as "normal" | "locked" | "absent" | "holiday",
-          hours: r.hours ?? 0,
+          minutes: r.minutes ?? 0,
         })),
       });
 
@@ -232,7 +237,7 @@ function getShift(empId: string, dayIndex: number): ShiftType {
   const row = shiftsMap[key];
   if (!row) return { type: "empty" };                 // UI-fallback
   if (row.type === "normal" || row.type === "locked") {
-    return { type: row.type, hours: row.hours ?? 0 };
+    return { type: row.type, minutes: row.minutes ?? 0 };
   }
   return { type: row.type }; // absent/holiday
 }
@@ -241,24 +246,42 @@ function getShift(empId: string, dayIndex: number): ShiftType {
   const getTotalHours = (employee: Employee) =>
     dates.reduce((sum, _, i) => {
       const s = getShift(employee.id, i);
-      return sum + (s.hours || 0);
+      return sum + (s.minutes || 0);
     }, 0);
+
+    function formatMinutes(total: number) {
+    if (!total) return "0h";
+    const h = Math.floor(total / 60);
+    const m = total % 60;
+    return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  }
 
   // Klikkaus: toggle empty <-> normal(8h), upsert DB:hen
 // ScheduleTable.tsx
 
 const applyCellChange = useScheduleStore(s => s.applyCellChange);
 
-function handleCellClick(employeeId: string, dayIndex: number, hours: number | null) {
+function handleCellClick(employeeId: string, dayIndex: number, minutes: number | null) {
   const iso = dates[dayIndex].iso;
   applyCellChange({
     employee_id: employeeId,
     work_date: iso,
-    hours
+    minutes,
   });
   setSelectedCell({ employee: employeeId, day: dayIndex });
 }
+ // Custom input state
+ const [customHours, setCustomHours] = useState<number>(0);
+ const [customMinutes, setCustomMinutes] = useState<number>(0);
 
+ function handleCustomHourSubmit(empId: string, dayIndex: number) {
+   const total = (customHours ?? 0) * 60 + (customMinutes ?? 0);
+   if (total > 0) {
+     handleCellClick(empId, dayIndex, total);
+     setCustomHours(0);
+     setCustomMinutes(0);
+   }
+ }
 
 
 
@@ -266,9 +289,9 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
   const getShiftDisplay = (shift: ShiftType) => {
     switch (shift.type) {
       case "normal":
-        return { content: `${shift.hours}h`, color: "bg-primary text-primary-foreground", icon: <Clock className="w-3 h-3" /> };
+        return { content: formatMinutes(shift.minutes ?? 0), color: "bg-primary text-primary-foreground", icon: <Clock className="w-3 h-3" /> };
       case "locked":
-        return { content: `${shift.hours}h`, color: "bg-amber-500 text-white", icon: <Lock className="w-3 h-3" /> };
+        return { content: formatMinutes(shift.minutes ?? 0), color: "bg-amber-500 text-white", icon: <Lock className="w-3 h-3" /> };
       case "absent":
         return { content: "A", color: "bg-destructive text-destructive-foreground", icon: <AlertCircle className="w-3 h-3" /> };
       case "holiday":
@@ -447,13 +470,13 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
 
     {/* Pikavalinnat */}
     <div className="grid grid-cols-2 gap-2">
-      {[4, 6, 7.5, 8].map((h) => (
+      {[4, 6, 8].map((h) => (
         <Button
           key={h}
           variant="outline"
           size="sm"
           onClick={() => {
-            handleCellClick(employee.id, dayIndex, h);
+            handleCellClick(employee.id, dayIndex, h * 60);
             setOpenPopover(null);
           }}
           className="justify-center"
@@ -463,35 +486,42 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
       ))}
     </div>
 
-    {/* Muu-arvo + Tallenna */}
-    <div className="flex items-center gap-2">
-      <Input
-        type="number"
-        step="0.5"
-        placeholder="esim. 5.5"
-        className="h-8"
-        onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-          if (e.key === "Enter") {
-            const val = parseFloat(e.currentTarget.value);
-            if (!isNaN(val)) {
-              handleCellClick(employee.id, dayIndex, val);
-              setOpenPopover(null);
-            }
-          }
-        }}
-      />
+    {/* Custom Hours + Minutes */}
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <Input
+          type="number"
+          min="0"
+          max="24"
+          placeholder="0"
+          value={customHours}
+          onChange={(e) => setCustomHours(Number(e.target.value))}
+          className="h-8 text-sm"
+        />
+        <Input
+          type="number"
+          min="0"
+          max="59"
+          step="15"
+          placeholder="0"
+          value={customMinutes}
+          onChange={(e) => setCustomMinutes(Number(e.target.value))}
+          className="h-8 text-sm"
+        />
+      </div>
       <Button
         size="sm"
-        onClick={(e) => {
-          const input = e.currentTarget.parentElement?.querySelector("input") as HTMLInputElement | null;
-          const val = input ? parseFloat(input.value) : NaN;
-          if (!isNaN(val)) {
-            handleCellClick(employee.id, dayIndex, val);
+        className="w-full h-8"
+        onClick={() => {
+          const total = (customHours ?? 0) * 60 + (customMinutes ?? 0);
+          if (total > 0) {
+            handleCellClick(employee.id, dayIndex, total);
             setOpenPopover(null);
           }
         }}
+        disabled={(customHours ?? 0) + (customMinutes ?? 0) === 0}
       >
-        ✓
+        Aseta aika
       </Button>
     </div>
 
@@ -543,7 +573,7 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
                 {dates.map((_, dayIndex) => {
                   const dayTotal = filteredEmployees.reduce((total, emp) => {
                     const s = getShift(emp.id, dayIndex);
-                    return total + (s?.hours || 0);
+                    return total + (s?.minutes || 0);
                   }, 0);
 
                   const filledCount = filteredEmployees.filter(
@@ -552,7 +582,7 @@ function handleCellClick(employeeId: string, dayIndex: number, hours: number | n
 
                   return (
                     <div key={dayIndex} className="p-3 bg-background text-center">
-                      <div className="text-sm font-semibold text-primary">{dayTotal}h</div>
+                      <div className="text-sm font-semibold text-primary">{formatMinutes(dayTotal)}</div>
                       <div className="text-xs text-muted-foreground">{filledCount} henkilöä</div>
                     </div>
                   );

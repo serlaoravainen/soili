@@ -1,6 +1,6 @@
 export interface ShiftType {
   type: 'normal' | 'locked' | 'absent' | 'holiday' | 'empty';
-  hours?: number;
+  minutes?: number;
   icon?: React.ReactNode;
 }
 
