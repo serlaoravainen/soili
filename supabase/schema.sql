@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VOa4RXF5lMNL62CAzeaPAbeFb7Yw0AYL39uTobu2hObyPpYXQH5ncZLNfte4CYd
+\restrict SoUwF8MIuX4YB8Qf3COYnesqJVuyfel3yTXMCVhBeEFPZpGGkPdI6G0czanN3vX
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
@@ -583,18 +583,32 @@ $$;
 CREATE FUNCTION public.enqueue_employee_new_shift() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-begin
-  if new.published is true then
-    insert into public.mail_jobs(type, payload)
-    values ('employee_new_shift', jsonb_build_object(
-      'employee_id', new.employee_id,
-      'work_date', new.work_date::text,
-      'start', new.start_time::text,
-      'end', new.end_time::text
+BEGIN
+  IF NEW.published IS TRUE THEN
+    -- sähköposti
+    INSERT INTO public.mail_jobs(type, payload)
+    VALUES ('employee_new_shift', jsonb_build_object(
+      'employee_id', NEW.employee_id,
+      'work_date', NEW.work_date::text,
+      'start', NEW.start_time::text,
+      'end', NEW.end_time::text
     ));
-  end if;
-  return new;
-end$$;
+
+    -- notifikaatio työntekijälle
+    INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+    VALUES (
+      NEW.employee_id,
+      'schedule_published',
+      'Vuorosi on julkaistu',
+      'Sinulle on lisätty työvuoro ' || NEW.work_date::text,
+      now(),
+      FALSE,
+      'high'
+    );
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -604,46 +618,25 @@ end$$;
 CREATE FUNCTION public.enqueue_employee_shift_changed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-declare
-  changed boolean := false;
 begin
-  -- ilmoita vain jos new.published=true
-  if new.published is not true then
-    return new;
+  -- Lähetä vain jos work_date tai published muuttuu
+  if (TG_OP = 'UPDATE' and (NEW.work_date is distinct from OLD.work_date
+     or NEW.published is distinct from OLD.published)) then
+
+    insert into employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+    values (
+      NEW.employee_id,
+      'schedule_updated',
+      'Työvuorosi on muuttunut',
+      'Päivämäärä: ' || NEW.work_date::text,
+      now(),
+      false,
+      'medium'
+    );
   end if;
-
-  if (old.employee_id is distinct from new.employee_id)
-     or (old.start_time  is distinct from new.start_time)
-     or (old.end_time    is distinct from new.end_time)
-     or (old.work_date   is distinct from new.work_date) then
-    changed := true;
-  end if;
-
-  if changed then
-    insert into public.mail_jobs(type, payload)
-    values ('employee_shift_changed', jsonb_build_object(
-      'employee_id', new.employee_id,
-      'work_date', new.work_date::text,
-      'old_start', old.start_time::text,
-      'old_end',   old.end_time::text,
-      'new_start', new.start_time::text,
-      'new_end',   new.end_time::text
-    ));
-
-    -- BONUS (listasi kohta 4): jos työntekijä vaihtui, ilmoita vanhalle "removed"
-    if old.employee_id is distinct from new.employee_id then
-      insert into public.mail_jobs(type, payload)
-      values ('employee_shift_deleted', jsonb_build_object(
-        'employee_id', old.employee_id,
-        'work_date',   coalesce(new.work_date, old.work_date)::text,
-        'start',       old.start_time::text,
-        'end',         old.end_time::text
-      ));
-    end if;
-  end if;
-
-  return new;
-end$$;
+  return NEW;
+end;
+$$;
 
 
 --
@@ -653,19 +646,32 @@ end$$;
 CREATE FUNCTION public.enqueue_employee_shift_deleted() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-begin
-  -- ilmoita vain jos poistettava rivi oli julkaistu
-  if old.published is true then
-    insert into public.mail_jobs(type, payload)
-    values ('employee_shift_deleted', jsonb_build_object(
-      'employee_id', old.employee_id,
-      'work_date',   old.work_date::text,
-      'start',       old.start_time::text,
-      'end',         old.end_time::text
+BEGIN
+  IF OLD.published IS TRUE THEN
+    -- sähköposti
+    INSERT INTO public.mail_jobs(type, payload)
+    VALUES ('employee_shift_deleted', jsonb_build_object(
+      'employee_id', OLD.employee_id,
+      'work_date',   OLD.work_date::text,
+      'start',       OLD.start_time::text,
+      'end',         OLD.end_time::text
     ));
-  end if;
-  return old;
-end$$;
+
+    -- notifikaatio
+    INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+    VALUES (
+      OLD.employee_id,
+      'shift_declined',
+      'Vuorosi on peruttu',
+      'Päivämäärä: ' || OLD.work_date::text,
+      now(),
+      FALSE,
+      'medium'
+    );
+  END IF;
+  RETURN OLD;
+END;
+$$;
 
 
 --
@@ -695,29 +701,33 @@ end$$;
 --
 
 CREATE FUNCTION public.enqueue_shift_publication_jobs() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
+    LANGUAGE plpgsql
     AS $$
 BEGIN
-  -- Jos rivi ei ole julkaistu, ei tehdä mitään
-  IF NEW.published IS NOT TRUE THEN
-    RETURN NEW;
-  END IF;
-
-  -- Luo mail_jobs-rivi jokaiselle työntekijälle erikseen
+  -- sähköposti kaikille työntekijöille
   INSERT INTO public.mail_jobs(type, payload)
-  SELECT
-    'shift_publication',
-    jsonb_build_object(
-      'employee_id', s.employee_id::text,
-      'work_date', s.work_date::text,
-      'hours', COALESCE(s.hours, 0),
-      'type', s.type::text
-    )
+  SELECT 'shift_publication', jsonb_build_object(
+    'employee_id', s.employee_id,
+    'work_date',   s.work_date::text
+  )
   FROM public.shifts s
-  WHERE s.work_date = NEW.work_date
-    AND s.published IS TRUE;
+  WHERE s.published = true
+    AND s.published_at >= now() - interval '1 minute';
 
-  RETURN NEW;
+  -- notifikaatio kaikille työntekijöille
+  INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+  SELECT DISTINCT s.employee_id,
+         'schedule_published',
+         'Uusi aikataulu julkaistu',
+         'Tarkista uudet työvuorosi.',
+         now(),
+         FALSE,
+         'high'
+  FROM public.shifts s
+  WHERE s.published = true
+    AND s.published_at >= now() - interval '1 minute';
+
+  RETURN NULL;
 END;
 $$;
 
@@ -2355,7 +2365,7 @@ CREATE TABLE public.employees (
     department text,
     is_active boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT now(),
-    user_id uuid,
+    auth_user_id uuid,
     role text DEFAULT 'employee'::text,
     CONSTRAINT employees_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'employee'::text])))
 );
@@ -2550,38 +2560,6 @@ PARTITION BY RANGE (inserted_at);
 
 
 --
--- Name: messages_2025_09_03; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_09_03 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
-
-
---
--- Name: messages_2025_09_04; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_09_04 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
-
-
---
 -- Name: messages_2025_09_05; Type: TABLE; Schema: realtime; Owner: -
 --
 
@@ -2650,6 +2628,38 @@ CREATE TABLE realtime.messages_2025_09_08 (
 --
 
 CREATE TABLE realtime.messages_2025_09_09 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_10; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_10 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_11; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_11 (
     topic text NOT NULL,
     extension text NOT NULL,
     payload jsonb,
@@ -2821,20 +2831,6 @@ CREATE TABLE supabase_migrations.seed_files (
 
 
 --
--- Name: messages_2025_09_03; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_03 FOR VALUES FROM ('2025-09-03 00:00:00') TO ('2025-09-04 00:00:00');
-
-
---
--- Name: messages_2025_09_04; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_04 FOR VALUES FROM ('2025-09-04 00:00:00') TO ('2025-09-05 00:00:00');
-
-
---
 -- Name: messages_2025_09_05; Type: TABLE ATTACH; Schema: realtime; Owner: -
 --
 
@@ -2867,6 +2863,20 @@ ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_08
 --
 
 ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_09 FOR VALUES FROM ('2025-09-09 00:00:00') TO ('2025-09-10 00:00:00');
+
+
+--
+-- Name: messages_2025_09_10; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_10 FOR VALUES FROM ('2025-09-10 00:00:00') TO ('2025-09-11 00:00:00');
+
+
+--
+-- Name: messages_2025_09_11; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_11 FOR VALUES FROM ('2025-09-11 00:00:00') TO ('2025-09-12 00:00:00');
 
 
 --
@@ -3113,7 +3123,7 @@ ALTER TABLE ONLY public.employees
 --
 
 ALTER TABLE ONLY public.employees
-    ADD CONSTRAINT employees_user_id_unique UNIQUE (user_id);
+    ADD CONSTRAINT employees_user_id_unique UNIQUE (auth_user_id);
 
 
 --
@@ -3213,22 +3223,6 @@ ALTER TABLE ONLY realtime.messages
 
 
 --
--- Name: messages_2025_09_03 messages_2025_09_03_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_09_03
-    ADD CONSTRAINT messages_2025_09_03_pkey PRIMARY KEY (id, inserted_at);
-
-
---
--- Name: messages_2025_09_04 messages_2025_09_04_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_09_04
-    ADD CONSTRAINT messages_2025_09_04_pkey PRIMARY KEY (id, inserted_at);
-
-
---
 -- Name: messages_2025_09_05 messages_2025_09_05_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
 --
 
@@ -3266,6 +3260,22 @@ ALTER TABLE ONLY realtime.messages_2025_09_08
 
 ALTER TABLE ONLY realtime.messages_2025_09_09
     ADD CONSTRAINT messages_2025_09_09_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_10 messages_2025_09_10_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_10
+    ADD CONSTRAINT messages_2025_09_10_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_11 messages_2025_09_11_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_11
+    ADD CONSTRAINT messages_2025_09_11_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -3783,20 +3793,6 @@ CREATE INDEX name_prefix_search ON storage.objects USING btree (name text_patter
 
 
 --
--- Name: messages_2025_09_03_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_03_pkey;
-
-
---
--- Name: messages_2025_09_04_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_04_pkey;
-
-
---
 -- Name: messages_2025_09_05_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
 --
 
@@ -3832,6 +3828,20 @@ ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_09
 
 
 --
+-- Name: messages_2025_09_10_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_10_pkey;
+
+
+--
+-- Name: messages_2025_09_11_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_11_pkey;
+
+
+--
 -- Name: absences trg_absence_enqueue_job; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3856,7 +3866,7 @@ CREATE TRIGGER trg_employee_new_shift AFTER INSERT ON public.shifts FOR EACH ROW
 -- Name: shifts trg_employee_shift_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_shift_changed();
+CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH ROW WHEN ((new.employee_id IS NOT NULL)) EXECUTE FUNCTION public.enqueue_employee_shift_changed();
 
 
 --
@@ -4031,7 +4041,15 @@ ALTER TABLE ONLY public.employee_notifications
 --
 
 ALTER TABLE ONLY public.employees
-    ADD CONSTRAINT employees_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
+    ADD CONSTRAINT employees_user_id_fkey FOREIGN KEY (auth_user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: employees fk_employees_auth; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employees
+    ADD CONSTRAINT fk_employees_auth FOREIGN KEY (auth_user_id) REFERENCES auth.users(id) ON DELETE SET NULL;
 
 
 --
@@ -4227,7 +4245,7 @@ ALTER TABLE public.absences ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY admin_insert_absences ON public.absences FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4236,14 +4254,14 @@ CREATE POLICY admin_insert_absences ON public.absences FOR INSERT TO authenticat
 
 CREATE POLICY admin_insert_app_settings ON public.app_settings FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
 -- Name: employees admin_insert_employees; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY admin_insert_employees ON public.employees FOR INSERT TO authenticated WITH CHECK (((role = 'admin'::text) AND (user_id = auth.uid())));
+CREATE POLICY admin_insert_employees ON public.employees FOR INSERT TO authenticated WITH CHECK (((role = 'admin'::text) AND (auth_user_id = auth.uid())));
 
 
 --
@@ -4252,7 +4270,7 @@ CREATE POLICY admin_insert_employees ON public.employees FOR INSERT TO authentic
 
 CREATE POLICY admin_insert_notifications ON public.employee_notifications FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4261,7 +4279,7 @@ CREATE POLICY admin_insert_notifications ON public.employee_notifications FOR IN
 
 CREATE POLICY admin_insert_shift_changes ON public.shift_change_requests FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4270,7 +4288,7 @@ CREATE POLICY admin_insert_shift_changes ON public.shift_change_requests FOR INS
 
 CREATE POLICY admin_insert_shifts ON public.shifts FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4279,7 +4297,7 @@ CREATE POLICY admin_insert_shifts ON public.shifts FOR INSERT TO authenticated W
 
 CREATE POLICY admin_insert_time_off ON public.time_off_requests FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4288,7 +4306,7 @@ CREATE POLICY admin_insert_time_off ON public.time_off_requests FOR INSERT TO au
 
 CREATE POLICY admin_insert_time_periods ON public.time_periods FOR INSERT TO authenticated WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4297,14 +4315,14 @@ CREATE POLICY admin_insert_time_periods ON public.time_periods FOR INSERT TO aut
 
 CREATE POLICY admin_select_all_absences ON public.absences FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
 -- Name: employees admin_select_all_employees; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY admin_select_all_employees ON public.employees FOR SELECT TO authenticated USING (((role = 'admin'::text) AND (user_id = auth.uid())));
+CREATE POLICY admin_select_all_employees ON public.employees FOR SELECT TO authenticated USING (((role = 'admin'::text) AND (auth_user_id = auth.uid())));
 
 
 --
@@ -4313,7 +4331,7 @@ CREATE POLICY admin_select_all_employees ON public.employees FOR SELECT TO authe
 
 CREATE POLICY admin_select_all_notifications ON public.employee_notifications FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4322,7 +4340,7 @@ CREATE POLICY admin_select_all_notifications ON public.employee_notifications FO
 
 CREATE POLICY admin_select_all_shift_changes ON public.shift_change_requests FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4331,7 +4349,7 @@ CREATE POLICY admin_select_all_shift_changes ON public.shift_change_requests FOR
 
 CREATE POLICY admin_select_all_shifts ON public.shifts FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4340,25 +4358,7 @@ CREATE POLICY admin_select_all_shifts ON public.shifts FOR SELECT TO authenticat
 
 CREATE POLICY admin_select_all_time_off ON public.time_off_requests FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
-
-
---
--- Name: app_settings admin_select_app_settings; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY admin_select_app_settings ON public.app_settings FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
-   FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
-
-
---
--- Name: time_periods admin_select_time_periods; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY admin_select_time_periods ON public.time_periods FOR SELECT TO authenticated USING ((EXISTS ( SELECT 1
-   FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4367,9 +4367,9 @@ CREATE POLICY admin_select_time_periods ON public.time_periods FOR SELECT TO aut
 
 CREATE POLICY admin_update_absences ON public.absences FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4378,16 +4378,16 @@ CREATE POLICY admin_update_absences ON public.absences FOR UPDATE TO authenticat
 
 CREATE POLICY admin_update_app_settings ON public.app_settings FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
 -- Name: employees admin_update_employees; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY admin_update_employees ON public.employees FOR UPDATE TO authenticated USING (((role = 'admin'::text) AND (user_id = auth.uid()))) WITH CHECK (((role = 'admin'::text) AND (user_id = auth.uid())));
+CREATE POLICY admin_update_employees ON public.employees FOR UPDATE TO authenticated USING (((role = 'admin'::text) AND (auth_user_id = auth.uid()))) WITH CHECK (((role = 'admin'::text) AND (auth_user_id = auth.uid())));
 
 
 --
@@ -4396,9 +4396,9 @@ CREATE POLICY admin_update_employees ON public.employees FOR UPDATE TO authentic
 
 CREATE POLICY admin_update_notifications ON public.employee_notifications FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4407,9 +4407,9 @@ CREATE POLICY admin_update_notifications ON public.employee_notifications FOR UP
 
 CREATE POLICY admin_update_shift_changes ON public.shift_change_requests FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4418,9 +4418,9 @@ CREATE POLICY admin_update_shift_changes ON public.shift_change_requests FOR UPD
 
 CREATE POLICY admin_update_shifts ON public.shifts FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4429,9 +4429,9 @@ CREATE POLICY admin_update_shifts ON public.shifts FOR UPDATE TO authenticated U
 
 CREATE POLICY admin_update_time_off ON public.time_off_requests FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4440,9 +4440,9 @@ CREATE POLICY admin_update_time_off ON public.time_off_requests FOR UPDATE TO au
 
 CREATE POLICY admin_update_time_periods ON public.time_periods FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
    FROM public.employees e
-  WHERE ((e.user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
 --
@@ -4527,7 +4527,7 @@ CREATE POLICY dev_read_notifications_anon ON public.notifications FOR SELECT TO 
 
 CREATE POLICY employee_insert_own_absences ON public.absences FOR INSERT TO authenticated WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4536,7 +4536,7 @@ CREATE POLICY employee_insert_own_absences ON public.absences FOR INSERT TO auth
 
 CREATE POLICY employee_insert_own_shift_change ON public.shift_change_requests FOR INSERT TO authenticated WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4545,7 +4545,7 @@ CREATE POLICY employee_insert_own_shift_change ON public.shift_change_requests F
 
 CREATE POLICY employee_insert_own_time_off ON public.time_off_requests FOR INSERT TO authenticated WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4555,12 +4555,19 @@ CREATE POLICY employee_insert_own_time_off ON public.time_off_requests FOR INSER
 ALTER TABLE public.employee_notifications ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: employees employee_select_employees; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY employee_select_employees ON public.employees FOR SELECT TO authenticated USING (true);
+
+
+--
 -- Name: absences employee_select_own_absences; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY employee_select_own_absences ON public.absences FOR SELECT TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4569,7 +4576,7 @@ CREATE POLICY employee_select_own_absences ON public.absences FOR SELECT TO auth
 
 CREATE POLICY employee_select_own_notifications ON public.employee_notifications FOR SELECT TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4578,9 +4585,9 @@ CREATE POLICY employee_select_own_notifications ON public.employee_notifications
 
 CREATE POLICY employee_select_own_shift_changes ON public.shift_change_requests FOR SELECT TO authenticated USING (((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))) OR (target_employee_id IN ( SELECT e.id
+  WHERE (e.auth_user_id = auth.uid()))) OR (target_employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid())))));
+  WHERE (e.auth_user_id = auth.uid())))));
 
 
 --
@@ -4589,7 +4596,7 @@ CREATE POLICY employee_select_own_shift_changes ON public.shift_change_requests 
 
 CREATE POLICY employee_select_own_shifts ON public.shifts FOR SELECT TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4598,14 +4605,14 @@ CREATE POLICY employee_select_own_shifts ON public.shifts FOR SELECT TO authenti
 
 CREATE POLICY employee_select_own_time_off ON public.time_off_requests FOR SELECT TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
 -- Name: employees employee_select_self; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY employee_select_self ON public.employees FOR SELECT TO authenticated USING ((user_id = auth.uid()));
+CREATE POLICY employee_select_self ON public.employees FOR SELECT TO authenticated USING ((auth_user_id = auth.uid()));
 
 
 --
@@ -4614,9 +4621,9 @@ CREATE POLICY employee_select_self ON public.employees FOR SELECT TO authenticat
 
 CREATE POLICY employee_update_own_absences ON public.absences FOR UPDATE TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
+  WHERE (e.auth_user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4625,9 +4632,9 @@ CREATE POLICY employee_update_own_absences ON public.absences FOR UPDATE TO auth
 
 CREATE POLICY employee_update_own_notifications ON public.employee_notifications FOR UPDATE TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
+  WHERE (e.auth_user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4636,9 +4643,9 @@ CREATE POLICY employee_update_own_notifications ON public.employee_notifications
 
 CREATE POLICY employee_update_own_shift_change ON public.shift_change_requests FOR UPDATE TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
+  WHERE (e.auth_user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
@@ -4647,16 +4654,16 @@ CREATE POLICY employee_update_own_shift_change ON public.shift_change_requests F
 
 CREATE POLICY employee_update_own_time_off ON public.time_off_requests FOR UPDATE TO authenticated USING ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
+  WHERE (e.auth_user_id = auth.uid())))) WITH CHECK ((employee_id IN ( SELECT e.id
    FROM public.employees e
-  WHERE (e.user_id = auth.uid()))));
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 --
 -- Name: employees employee_update_self; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY employee_update_self ON public.employees FOR UPDATE TO authenticated USING ((user_id = auth.uid())) WITH CHECK ((user_id = auth.uid()));
+CREATE POLICY employee_update_self ON public.employees FOR UPDATE TO authenticated USING ((auth_user_id = auth.uid())) WITH CHECK ((auth_user_id = auth.uid()));
 
 
 --
@@ -4717,6 +4724,20 @@ CREATE POLICY "notifications update" ON public.notifications FOR UPDATE TO authe
 --
 
 CREATE POLICY notifications_select_auth ON public.notifications FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: app_settings select_app_settings_all; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY select_app_settings_all ON public.app_settings FOR SELECT TO authenticated USING (true);
+
+
+--
+-- Name: time_periods select_time_periods_all; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY select_time_periods_all ON public.time_periods FOR SELECT TO authenticated USING (true);
 
 
 --
@@ -4870,5 +4891,5 @@ CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VOa4RXF5lMNL62CAzeaPAbeFb7Yw0AYL39uTobu2hObyPpYXQH5ncZLNfte4CYd
+\unrestrict SoUwF8MIuX4YB8Qf3COYnesqJVuyfel3yTXMCVhBeEFPZpGGkPdI6G0czanN3vX
 
