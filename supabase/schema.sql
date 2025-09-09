@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict SoUwF8MIuX4YB8Qf3COYnesqJVuyfel3yTXMCVhBeEFPZpGGkPdI6G0czanN3vX
+\restrict CnB82bQWSPRteRP2DYKRzvfQMKPWEBXVOilEl6CFtjQd8VkHZprcqeE9MhfKF9J
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
@@ -584,28 +584,6 @@ CREATE FUNCTION public.enqueue_employee_new_shift() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF NEW.published IS TRUE THEN
-    -- sähköposti
-    INSERT INTO public.mail_jobs(type, payload)
-    VALUES ('employee_new_shift', jsonb_build_object(
-      'employee_id', NEW.employee_id,
-      'work_date', NEW.work_date::text,
-      'start', NEW.start_time::text,
-      'end', NEW.end_time::text
-    ));
-
-    -- notifikaatio työntekijälle
-    INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-    VALUES (
-      NEW.employee_id,
-      'schedule_published',
-      'Vuorosi on julkaistu',
-      'Sinulle on lisätty työvuoro ' || NEW.work_date::text,
-      now(),
-      FALSE,
-      'high'
-    );
-  END IF;
   RETURN NEW;
 END;
 $$;
@@ -619,22 +597,30 @@ CREATE FUNCTION public.enqueue_employee_shift_changed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 begin
-  -- Lähetä vain jos work_date tai published muuttuu
-  if (TG_OP = 'UPDATE' and (NEW.work_date is distinct from OLD.work_date
-     or NEW.published is distinct from OLD.published)) then
-
-    insert into employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-    values (
-      NEW.employee_id,
-      'schedule_updated',
-      'Työvuorosi on muuttunut',
-      'Päivämäärä: ' || NEW.work_date::text,
-      now(),
-      false,
-      'medium'
-    );
+  if new.published is distinct from old.published
+     and new.work_date  is not distinct from old.work_date
+     and new.start_time is not distinct from old.start_time
+     and new.end_time   is not distinct from old.end_time
+     and new.type       is not distinct from old.type
+     and new.minutes    is not distinct from old.minutes then
+    return new;
   end if;
-  return NEW;
+
+  if (new.work_date  is distinct from old.work_date
+      or new.start_time is distinct from old.start_time
+      or new.end_time   is distinct from old.end_time
+      or new.type       is distinct from old.type
+      or new.minutes    is distinct from old.minutes) then
+    insert into public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+    values (new.employee_id,
+            'schedule_updated',
+            'Työvuorosi on muuttunut',
+            'Päivämäärä: ' || new.work_date::text,
+            now(), false, 'medium')
+    on conflict do nothing;
+  end if;
+
+  return new;
 end;
 $$;
 
@@ -681,19 +667,10 @@ $$;
 CREATE FUNCTION public.enqueue_on_publish_flip() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-begin
-  if old.published is distinct from new.published and new.published is true then
-    new.published_at := coalesce(new.published_at, now());
-    insert into public.mail_jobs(type, payload)
-    values ('employee_new_shift', jsonb_build_object(
-      'employee_id', new.employee_id,
-      'work_date',   new.work_date::text,
-      'start',       new.start_time::text,
-      'end',         new.end_time::text
-    ));
-  end if;
-  return new;
-end$$;
+BEGIN
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -704,29 +681,6 @@ CREATE FUNCTION public.enqueue_shift_publication_jobs() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  -- sähköposti kaikille työntekijöille
-  INSERT INTO public.mail_jobs(type, payload)
-  SELECT 'shift_publication', jsonb_build_object(
-    'employee_id', s.employee_id,
-    'work_date',   s.work_date::text
-  )
-  FROM public.shifts s
-  WHERE s.published = true
-    AND s.published_at >= now() - interval '1 minute';
-
-  -- notifikaatio kaikille työntekijöille
-  INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-  SELECT DISTINCT s.employee_id,
-         'schedule_published',
-         'Uusi aikataulu julkaistu',
-         'Tarkista uudet työvuorosi.',
-         now(),
-         FALSE,
-         'high'
-  FROM public.shifts s
-  WHERE s.published = true
-    AND s.published_at >= now() - interval '1 minute';
-
   RETURN NULL;
 END;
 $$;
@@ -807,17 +761,28 @@ end $$;
 --
 
 CREATE FUNCTION public.publish_shifts(_start_date date, _end_date date) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
+    LANGUAGE plpgsql
     AS $$
-begin
-  update public.shifts
-  set published = true
-  where work_date between _start_date and _end_date;
+BEGIN
+  UPDATE public.shifts
+  SET published = true, published_at = now()
+  WHERE work_date BETWEEN _start_date AND _end_date
+    AND published = false;
 
-  -- Tee myös rivi shift_publications-tauluun
-  insert into public.shift_publications (start_date, end_date, status)
-  values (_start_date, _end_date, 'pending');
-end;
+  INSERT INTO public.shift_publications (start_date, end_date, status)
+  VALUES (_start_date, _end_date, 'pending');
+
+  INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+  SELECT DISTINCT s.employee_id,
+         'schedule_published',
+         'Uusi aikataulu julkaistu',
+         'Tarkista uudet työvuorosi.',
+         now(), false, 'high'
+  FROM public.shifts s
+  WHERE s.work_date BETWEEN _start_date AND _end_date
+    AND s.published = true
+    AND s.published_at >= now() - interval '1 minute';
+END;
 $$;
 
 
@@ -882,16 +847,37 @@ $$;
 -- Name: upsert_shifts(uuid, date, text, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.upsert_shifts(_employee_id uuid, _work_date date, _type text, _hours integer) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
+CREATE FUNCTION public.upsert_shifts(_employee_id uuid, _work_date date, _type text, _minutes integer) RETURNS void
+    LANGUAGE plpgsql
     AS $$
 begin
-  insert into public.shifts (employee_id, work_date, type, hours)
-  values (_employee_id, _work_date, _type, _hours)
+  insert into public.shifts (employee_id, work_date, type, minutes)
+  values (_employee_id, _work_date, _type, _minutes)
   on conflict (employee_id, work_date)
   do update set
     type = excluded.type,
-    hours = excluded.hours;
+    minutes = excluded.minutes;
+end;
+$$;
+
+
+--
+-- Name: upsert_shifts_bulk(jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.upsert_shifts_bulk(_rows jsonb) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+begin
+  insert into shifts (employee_id, work_date, type, minutes)
+  select (r->>'employee_id')::uuid,
+         (r->>'work_date')::date,
+         r->>'type',
+         (r->>'minutes')::int
+  from jsonb_array_elements(_rows) as r
+  on conflict (employee_id, work_date)
+  do update set type = excluded.type,
+                minutes = excluded.minutes;
 end;
 $$;
 
@@ -2497,7 +2483,6 @@ CREATE TABLE public.shifts (
     work_date date NOT NULL,
     start_time time without time zone,
     end_time time without time zone,
-    hours numeric(4,2) DEFAULT 0 NOT NULL,
     type text DEFAULT 'normal'::text NOT NULL,
     is_locked boolean DEFAULT false NOT NULL,
     note text,
@@ -2505,8 +2490,7 @@ CREATE TABLE public.shifts (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     published boolean DEFAULT false NOT NULL,
     published_at timestamp with time zone,
-    CONSTRAINT shifts_hours_check CHECK (((hours >= (0)::numeric) AND (hours <= (24)::numeric))),
-    CONSTRAINT shifts_hours_range_chk CHECK (((hours >= (0)::numeric) AND (hours <= (24)::numeric))),
+    minutes integer DEFAULT 0 NOT NULL,
     CONSTRAINT shifts_time_order_chk CHECK (((start_time IS NULL) OR (end_time IS NULL) OR (start_time < end_time))),
     CONSTRAINT shifts_type_allowed_chk CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text]))),
     CONSTRAINT shifts_type_check CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text])))
@@ -2660,6 +2644,22 @@ CREATE TABLE realtime.messages_2025_09_10 (
 --
 
 CREATE TABLE realtime.messages_2025_09_11 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_12; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_12 (
     topic text NOT NULL,
     extension text NOT NULL,
     payload jsonb,
@@ -2877,6 +2877,13 @@ ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_10
 --
 
 ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_11 FOR VALUES FROM ('2025-09-11 00:00:00') TO ('2025-09-12 00:00:00');
+
+
+--
+-- Name: messages_2025_09_12; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_12 FOR VALUES FROM ('2025-09-12 00:00:00') TO ('2025-09-13 00:00:00');
 
 
 --
@@ -3215,6 +3222,14 @@ ALTER TABLE ONLY public.time_periods
 
 
 --
+-- Name: employee_notifications uniq_emp_date_update; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_notifications
+    ADD CONSTRAINT uniq_emp_date_update UNIQUE (employee_id, type, message);
+
+
+--
 -- Name: messages messages_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
 --
 
@@ -3276,6 +3291,14 @@ ALTER TABLE ONLY realtime.messages_2025_09_10
 
 ALTER TABLE ONLY realtime.messages_2025_09_11
     ADD CONSTRAINT messages_2025_09_11_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_12 messages_2025_09_12_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_12
+    ADD CONSTRAINT messages_2025_09_12_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -3842,6 +3865,13 @@ ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_11
 
 
 --
+-- Name: messages_2025_09_12_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_12_pkey;
+
+
+--
 -- Name: absences trg_absence_enqueue_job; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3856,13 +3886,6 @@ CREATE TRIGGER trg_admin_new_absence AFTER INSERT ON public.absences FOR EACH RO
 
 
 --
--- Name: shifts trg_employee_new_shift; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_employee_new_shift AFTER INSERT ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_new_shift();
-
-
---
 -- Name: shifts trg_employee_shift_changed; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3874,13 +3897,6 @@ CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH
 --
 
 CREATE TRIGGER trg_employee_shift_deleted AFTER DELETE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_shift_deleted();
-
-
---
--- Name: shifts trg_enqueue_shift_publication_jobs; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_enqueue_shift_publication_jobs AFTER UPDATE OF published ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_shift_publication_jobs();
 
 
 --
@@ -3902,13 +3918,6 @@ CREATE TRIGGER trg_notify_absence_update AFTER UPDATE ON public.absences FOR EAC
 --
 
 CREATE TRIGGER trg_notify_employee_added AFTER INSERT ON public.employees FOR EACH ROW EXECUTE FUNCTION public.notify_employee_added();
-
-
---
--- Name: shifts trg_shifts_on_publish_flip; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_shifts_on_publish_flip BEFORE UPDATE OF published ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_on_publish_flip();
 
 
 --
@@ -4891,5 +4900,5 @@ CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
 -- PostgreSQL database dump complete
 --
 
-\unrestrict SoUwF8MIuX4YB8Qf3COYnesqJVuyfel3yTXMCVhBeEFPZpGGkPdI6G0czanN3vX
+\unrestrict CnB82bQWSPRteRP2DYKRzvfQMKPWEBXVOilEl6CFtjQd8VkHZprcqeE9MhfKF9J
 
