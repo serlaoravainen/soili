@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict CnB82bQWSPRteRP2DYKRzvfQMKPWEBXVOilEl6CFtjQd8VkHZprcqeE9MhfKF9J
+\restrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
@@ -2544,22 +2544,6 @@ PARTITION BY RANGE (inserted_at);
 
 
 --
--- Name: messages_2025_09_05; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_09_05 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
-
-
---
 -- Name: messages_2025_09_06; Type: TABLE; Schema: realtime; Owner: -
 --
 
@@ -2828,13 +2812,6 @@ CREATE TABLE supabase_migrations.seed_files (
     path text NOT NULL,
     hash text NOT NULL
 );
-
-
---
--- Name: messages_2025_09_05; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_05 FOR VALUES FROM ('2025-09-05 00:00:00') TO ('2025-09-06 00:00:00');
 
 
 --
@@ -3235,14 +3212,6 @@ ALTER TABLE ONLY public.employee_notifications
 
 ALTER TABLE ONLY realtime.messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (id, inserted_at);
-
-
---
--- Name: messages_2025_09_05 messages_2025_09_05_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_09_05
-    ADD CONSTRAINT messages_2025_09_05_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -3813,13 +3782,6 @@ CREATE INDEX idx_objects_bucket_id_name ON storage.objects USING btree (bucket_i
 --
 
 CREATE INDEX name_prefix_search ON storage.objects USING btree (name text_pattern_ops);
-
-
---
--- Name: messages_2025_09_05_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_05_pkey;
 
 
 --
@@ -4900,5 +4862,5 @@ CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
 -- PostgreSQL database dump complete
 --
 
-\unrestrict CnB82bQWSPRteRP2DYKRzvfQMKPWEBXVOilEl6CFtjQd8VkHZprcqeE9MhfKF9J
+\unrestrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
 
