@@ -21,6 +21,7 @@ import {
  import { useSettingsStore } from "@/store/useSettingsStore";
  import { saveNotificationSettingsToDb } from "@/lib/settingsDb";
  import { applyTheme } from "@/lib/theme";
+ import { formatMinutes } from "@/lib/timeUtils";
 import type {
   Theme, Language, WeekStartDay, DateFormat
 } from "@/lib/settingsSchema";
@@ -207,17 +208,17 @@ export default function SettingsDialog() {
             <TabsContent value="auto-generation" className="p-4 space-y-4">
               <div className="space-y-2">
                 <Label className="text-sm font-medium">
-                  Oletustuntimäärä: {settings.autoGeneration.defaultHours}h
+                  Oletuskesto: {formatMinutes(settings.autoGeneration.defaultMinutes)}
                 </Label>
                 <Slider
-                  value={[settings.autoGeneration.defaultHours]}
-                  onValueChange={([v]) => updateAutoGenerationSettings("defaultHours", v)}
+                  value={[settings.autoGeneration.defaultMinutes]}
+                  onValueChange={([v]) => updateAutoGenerationSettings("defaultMinutes", v)}
                   min={1}
-                  max={12}
-                  step={0.5}
+                  max={720}
+                  step={15}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Automaattisesti luodut vuorot käyttävät tätä tuntimäärää
+                  Automaattisesti luodut vuorot käyttävät tätä oletuskestoa (minuutteina)
                 </p>
               </div>
 

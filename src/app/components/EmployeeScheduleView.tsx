@@ -8,6 +8,7 @@ import { Switch } from './ui/switch';
 import { Label } from './ui/label';
 import { Calendar, Clock, Users, Eye, EyeOff, AlertCircle, Lock, Plane } from 'lucide-react';
 import { Employee, ShiftType, DateInfo, TimePeriod, AppSettings } from '../types';
+import { formatMinutes } from "@/lib/timeUtils";
 
 
 
@@ -15,10 +16,10 @@ type ShiftRow = {
   id: string;
   employee_id: string;
   work_date: string;
-  hours: number;
+  minutes: number;
   type: 'normal' | 'locked' | 'absent' | 'holiday' | 'empty';
   is_locked: boolean;
-  published: boolean; // ✅ lisää tämä
+  published: boolean;
 };
 
 
@@ -52,7 +53,7 @@ useEffect(() => {
 
 const { data, error } = await supabase
   .from("shifts")
-  .select("employee_id, work_date, hours, type, is_locked, published") // julkaisu mukana
+  .select("employee_id, work_date, minutes, type, is_locked, published") // julkaisu mukana
   .gte("work_date", dates[0].fullDate.toISOString().slice(0, 10))
   .lte("work_date", dates[timePeriod - 1].fullDate.toISOString().slice(0, 10))
   .eq("published", true);
@@ -74,7 +75,7 @@ const type: ShiftType["type"] =
           if (!grouped[shift.employee_id]) grouped[shift.employee_id] = {};
           grouped[shift.employee_id][shift.work_date] = {
             type,
-            hours: shift.hours,
+            minutes: shift.minutes,
           };
         });
         setEmployeeShifts(grouped);
@@ -161,13 +162,13 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
     switch (shift.type) {
       case 'normal':
         return { 
-          content: `${shift.hours}h`, 
+          content: shift.minutes ? formatMinutes(shift.minutes) : "", 
           color: `bg-primary text-primary-foreground ${baseStyle}`, 
           icon: <Clock className="w-3 h-3" /> 
         };
       case 'locked':
         return { 
-          content: `${shift.hours}h`, 
+          content: shift.minutes ? formatMinutes(shift.minutes) : "", 
           color: `bg-amber-500 text-white ${baseStyle}`, 
           icon: <Lock className="w-3 h-3" /> 
         };
@@ -192,13 +193,13 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
     }
   };
 
- const getTotalHours = (shifts: Record<string, ShiftType>) => {
+ const getTotalMinutes = (shifts: Record<string, ShiftType>) => {
    return Object.values(shifts).reduce((total, shift) => {
-     return total + (shift.hours || 0);
+     return total + (shift.minutes || 0);
    }, 0);
  };
 
- const currentEmployeeTotalHours = getTotalHours(employeeShifts[currentEmployee.id] || {});
+ const currentEmployeeTotalMinutes = getTotalMinutes(employeeShifts[currentEmployee.id] || {});
   const gridCols = `grid-cols-${Math.min(7 + 1, 12)}`;
 
   return (
@@ -216,7 +217,7 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
             <div className="flex items-center gap-4">
               <Badge variant="secondary" className="px-3 py-1">
                 <Clock className="w-4 h-4 mr-2" />
-                Omat tunnit: {currentEmployeeTotalHours}h
+                Omat tunnit: {formatMinutes(currentEmployeeTotalMinutes)}
               </Badge>
               <div className="flex items-center space-x-2">
                 <Switch
@@ -288,13 +289,14 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
                           </div>
                           <div className="text-xs text-muted-foreground">{employee.department}</div>
                         </div>
-                        <Badge variant="outline" className="text-xs">
-                          {getTotalHours(employee.shifts)}h
-                        </Badge>
+<Badge variant="outline" className="text-xs">
+  {formatMinutes(getTotalMinutes(employee.shifts))}
+</Badge>
+
                       </div>
                       {dates.map((d, dayIndex) => {
                         const dateKey = d.fullDate.toISOString().slice(0, 10);
-                        const shift = employee.shifts[dateKey] || { type: "empty", hours: 0 };
+                        const shift = employee.shifts[dateKey] || { type: "empty", minutes: 0 };
                         const shiftDisplay = getShiftDisplay(shift, isCurrentEmployee);
                         const isToday = d.fullDate.toDateString() === new Date().toDateString();
 
@@ -307,7 +309,8 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
                               ${shiftDisplay.color}
                               transition-all duration-200
                             `}
-                            title={`${employee.name} - ${d.day} ${d.date}${shift.type === 'normal' ? ` (${shift.hours}h)` : shift.type === 'empty' ? ' - Vapaa' : ''}`}
+                            title={`${employee.name} - ${d.day} ${d.date}${shift.type === 'normal' ? ` (${formatMinutes(shift.minutes ?? 0)})` : shift.type === 'empty' ? ' - Vapaa' : ''}`}
+
                           >
                             <div className="flex flex-col items-center space-y-1">
                               {shiftDisplay.icon}
@@ -337,14 +340,14 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
                       const dateKey = dates[dayIndex].fullDate.toISOString().slice(0, 10);
                       const dayTotal = employeesWithShifts.reduce((total, employee) => {
                         const shift = employee.shifts[dateKey];
-                        return total + (shift?.hours || 0);
+                        return total + (shift?.minutes || 0);
                       }, 0);
 
                       const countEmployees = employeesWithShifts.filter(emp => emp.shifts[dateKey]?.type !== 'empty').length;
 
                       return (
                         <div key={dayIndex} className="p-3 bg-background text-center min-w-[80px]">
-                          <div className="text-sm font-semibold text-primary">{dayTotal}h</div>
+                          <div className="text-sm font-semibold text-primary">{formatMinutes(dayTotal)}</div>
                           <div className="text-xs text-muted-foreground">
                             {countEmployees} henkilöä
                           </div>
@@ -367,7 +370,7 @@ const employeesWithShifts: EmployeeWithMappedShifts[] = displayEmployees.map((em
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="text-center p-4 border border-border rounded-lg bg-primary/5">
-              <div className="text-2xl font-bold text-primary">{currentEmployeeTotalHours}h</div>
+              <div className="text-2xl font-bold text-primary">{formatMinutes(currentEmployeeTotalMinutes)}</div>
               <div className="text-sm text-muted-foreground">Omat tunnit yhteensä</div>
             </div>
             <div className="text-center p-4 border border-border rounded-lg">

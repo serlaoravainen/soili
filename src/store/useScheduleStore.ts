@@ -95,6 +95,12 @@ function keyOf(empId: string, iso: string) {
   return `${empId}|${iso}`;
 }
 
+// Normalisoi päivämäärä aina YYYY-MM-DD muotoon
+function normalizeDate(dateStr: string) {
+  if (!dateStr) return dateStr;
+  return dateStr.slice(0, 10);
+}
+
 function todayLocalISO() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -159,24 +165,25 @@ days: 10 as State["days"],
 
       applyCellChange: ({ employee_id, work_date, minutes }) => {
       const m = typeof minutes === "number" ? minutes : 0;
-      const k = keyOf(employee_id, work_date);
+      const dateISO = normalizeDate(work_date);
+      const k = keyOf(employee_id, dateISO);
       const { shiftsMap, pending, undoStack } = get();
 
       const prev = shiftsMap[k];
 
       const nextMap = { ...shiftsMap };
-      if (m <= 0) {
+      if (m === null || m <= 0) {
         delete nextMap[k];
       } else {
         nextMap[k] = {
           employee_id,
-          work_date,
+          work_date: dateISO,
           type: "normal",
           minutes: m,
         };
       }
 
-      const nextPending = { ...pending, [k]: { employee_id, work_date, minutes: m } };
+      const nextPending = { ...pending, [k]: { employee_id, work_date: dateISO, minutes: m } };
 
       set({
         shiftsMap: nextMap,
@@ -214,16 +221,17 @@ saveAll: async () => {
     const deletes: { employee_id: string; work_date: string }[] = [];
 
     for (const c of changes) {
-    if (c.minutes <= 0) {
-      deletes.push({ employee_id: c.employee_id, work_date: c.work_date });
-    } else {
-      upserts.push({
-        employee_id: c.employee_id,
-        work_date: c.work_date,
-        type: "normal",
-        minutes: c.minutes ?? 0,
-      });
-    }
+      const dateISO = normalizeDate(c.work_date);
+      if (c.minutes <= 0) {
+        deletes.push({ employee_id: c.employee_id, work_date: dateISO });
+      } else {
+        upserts.push({
+          employee_id: c.employee_id,
+          work_date: dateISO,
+          type: "normal",
+          minutes: c.minutes ?? 0,
+        });
+      }
     }
 
     if (upserts.length) {

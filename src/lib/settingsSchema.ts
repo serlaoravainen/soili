@@ -35,13 +35,13 @@ export const GeneralSettingsSchema = z.object({
 });
 
 export const AutoGenSettingsSchema = z.object({
-  defaultHours: z.number().min(1).max(12),
+  defaultMinutes: z.number().int().min(1).max(720),
   distributeEvenly: z.boolean(),
   respectWorkingHours: z.boolean(),
   skipWeekends: z.boolean(),
   skipHolidays: z.boolean(),
   maxConsecutiveDays: z.number().int().min(1).max(14),
-  minRestHours: z.number().int().min(8).max(24),
+  minRestMinutes: z.number().int().min(60).max(1440),
 });
 
 export const ExportSettingsSchema = z.object({
@@ -98,13 +98,13 @@ export const DEFAULT_SETTINGS: Settings = {
     autoSaveInterval: 60,
   },
   autoGeneration: {
-    defaultHours: 8,
+    defaultMinutes: 480,
     distributeEvenly: false,
     respectWorkingHours: true,
     skipWeekends: true,
     skipHolidays: false,
     maxConsecutiveDays: 5,
-    minRestHours: 11,
+    minRestMinutes: 660,
   },
   export: {
     companyName: "Yritys Oy",

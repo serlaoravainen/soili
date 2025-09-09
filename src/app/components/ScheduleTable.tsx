@@ -16,8 +16,6 @@ import { alignToWeekStart } from "@/lib/dateUtils";
 import { logError, logInfo } from "@/lib/logger";
 
 
-
-
 type DateCell = DateInfo & { iso: string };
 
         type EmployeeRow = {
@@ -396,7 +394,7 @@ function handleCellClick(employeeId: string, dayIndex: number, minutes: number |
                       <div className="text-xs text-muted-foreground">{employee.department}</div>
                     </div>
                     <Badge variant="outline" className="text-xs">
-                      {getTotalHours(employee)}h
+                      {formatMinutes(getTotalHours(employee))}
                     </Badge>
                   </div>
 
@@ -417,49 +415,55 @@ function handleCellClick(employeeId: string, dayIndex: number, minutes: number |
     setOpenPopover(o ? `${employee.id}-${dayIndex}` : null)
   }
 >
-  <PopoverTrigger asChild>
-    <div
-      className={`
-        h-16 p-2 m-0 rounded-none border-0 group
-        flex items-center justify-center
-        ${isSelected ? "ring-2 ring-ring ring-offset-2" : ""}
-        transition-all duration-200 hover:scale-105 hover:shadow-md
-        ${
-          absence
-            ? absence.type === "holiday"
-              ? "bg-blue-100 cursor-not-allowed"
-              : "bg-red-100 cursor-not-allowed"
-            : shiftDisplay.color + " cursor-pointer"
-        }
-      `}
-    >
-      <div className="flex flex-col items-center space-y-1">
-        {absence ? (
-          <>
-            <span
-              className={`text-xs font-medium ${
-                absence.type === "holiday" ? "text-blue-600" : "text-red-600"
-              }`}
-            >
-              {absence.type === "holiday" ? "L" : "A"}
+<PopoverTrigger asChild>
+  <div
+    className={`
+      h-16 p-2 m-0 rounded-none border-0 group
+      flex items-center justify-center
+      ${isSelected ? "ring-2 ring-ring ring-offset-2" : ""}
+      transition-all duration-200 hover:scale-105 hover:shadow-md
+      ${
+        absence
+          ? absence.type === "holiday"
+            ? "bg-blue-100 cursor-not-allowed"
+            : "bg-red-100 cursor-not-allowed"
+          : shiftDisplay.color + " cursor-pointer"
+      }
+    `}
+    onDoubleClick={() => {
+      if (!absence) {
+        handleCellClick(employee.id, dayIndex, 0); // poisto
+      }
+    }}
+  >
+    <div className="flex flex-col items-center space-y-1">
+      {absence ? (
+        <>
+          <span
+            className={`text-xs font-medium ${
+              absence.type === "holiday" ? "text-blue-600" : "text-red-600"
+            }`}
+          >
+            {absence.type === "holiday" ? "L" : "A"}
+          </span>
+          <span className="text-[10px]">
+            {absence.type === "holiday" ? "Loma" : "Poissaolo"}
+          </span>
+        </>
+      ) : (
+        <>
+          {shiftDisplay.icon}
+          {shiftDisplay.content && (
+            <span className="text-xs font-medium">
+              {shiftDisplay.content}
             </span>
-            <span className="text-[10px]">
-              {absence.type === "holiday" ? "Loma" : "Poissaolo"}
-            </span>
-          </>
-        ) : (
-          <>
-            {shiftDisplay.icon}
-            {shiftDisplay.content && (
-              <span className="text-xs font-medium">
-                {shiftDisplay.content}
-              </span>
-            )}
-          </>
-        )}
-      </div>
+          )}
+        </>
+      )}
     </div>
-  </PopoverTrigger>
+  </div>
+</PopoverTrigger>
+
 
   {/* Näytä PopoverContent vain jos ei ole absence */}
 {!absence && (

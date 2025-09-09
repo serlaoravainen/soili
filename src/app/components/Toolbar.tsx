@@ -11,6 +11,7 @@ import NotificationsPopover from "./ui/NotificationsPopover";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import SettingsDialog from "./SettingsDialog";
 import { useSettingsStore } from "@/store/useSettingsStore";
+import { formatMinutes } from "@/lib/timeUtils";
 import {
   Upload,
   RefreshCw,
@@ -74,7 +75,7 @@ type ShiftRow = {
   employee_id: string;
   work_date: string;
   type: "normal" | "locked" | "absent" | "holiday";
-  hours: number | null;
+  minutes: number | null;
 };
 
 const Toolbar = () => {
@@ -87,7 +88,7 @@ const Toolbar = () => {
   const DAYS = useScheduleStore((s) => s.days);
 
 
-   const defaultHours = useSettingsStore((s) => s.settings.autoGeneration.defaultHours);
+   const defaultMinutes = useSettingsStore((s) => s.settings.autoGeneration.defaultMinutes);
    const hashydrateSettings = useSettingsStore(selectHashydrate);
    const hashydrateSchedule = useScheduleStore(selectHashydrate);
 
@@ -172,7 +173,7 @@ useEffect(() => {
     const end = range[range.length - 1];
     let q = supabase
       .from("shifts")
-      .select("employee_id, work_date, type, hours")
+      .select("employee_id, work_date, type, minutes")
       .gte("work_date", start)
       .lte("work_date", end);
 
@@ -252,7 +253,7 @@ async function fetchAbsencesByRange(empIds: string[]): Promise<AbsenceRow[]> {
             employee_id: emp.id,
             work_date: d,
             type: "normal",
-            hours: defaultHours,
+            minutes: defaultMinutes,
           });
         }
       }
@@ -302,7 +303,7 @@ await supabase.from("notifications").insert({
       if (exportSettings.includeNames) header.push("employee_name");
       if (exportSettings.includeEmails) header.push("employee_email");
       if (exportSettings.includeDepartments) header.push("department");
-      header.push("work_date", "type", "hours");
+      header.push("work_date", "type", "minutes");
 
       // Nopeaan lookupiin
       const shiftMap = new Map<string, ShiftRow>(); // empId|date -> shift
@@ -314,7 +315,7 @@ await supabase.from("notifications").insert({
         if (exportSettings.includeNames) row.push(emp?.name ?? "");
         if (exportSettings.includeEmails) row.push(emp?.email ?? "");
         if (exportSettings.includeDepartments) row.push(emp?.department ?? "");
-        row.push(date, s?.type ?? "", s?.hours ?? 0);
+        row.push(date, s?.type ?? "", s?.minutes ? formatMinutes(s.minutes) : "0h");
         return row;
       };
 
@@ -340,20 +341,19 @@ await supabase.from("notifications").insert({
       if (exportSettings.includeHourTotals) {
         const totals = new Map<string, number>(); // empId -> total hours
         for (const emp of employees) totals.set(emp.id, 0);
-        for (const s of shifts) totals.set(s.employee_id, (totals.get(s.employee_id) ?? 0) + (s.hours ?? 0));
+        for (const s of shifts) totals.set(s.employee_id, (totals.get(s.employee_id) ?? 0) + (s.minutes ?? 0));
         const totalsRows = Array.from(totals.entries()).map(([empId, sum]) => {
           const emp = byId.get(empId)!;
-          // label: nimi > email > id
           const label =
             exportSettings.includeNames ? emp.name :
             exportSettings.includeEmails ? emp.email : emp.id;
-          return [label, String(sum)];
+          return [label, formatMinutes(sum)];
         });
         const totalsCsv =
-          "\n\n" +
-          ["employee", "total_hours"].join(",") +
-          "\n" +
-          totalsRows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+          "\\n\\n" +
+          ["employee", "total_minutes"].join(",") +
+          "\\n" +
+          totalsRows.map((r) => r.map((v) => `\\"${String(v).replace(/\\\"/g, '\"\"')}\"`).join(",")).join("\\n");
         csv += totalsCsv;
       }
 
@@ -414,7 +414,7 @@ await supabase.from("notifications").insert({
             <td>${e?.department ?? ""}</td>
             <td>${s.work_date}</td>
             <td>${s.type}</td>
-            <td>${s.hours ?? 0}</td>
+            <td>${s.minutes ?? 0}</td>
           </tr>`;
         })
         .join("");
@@ -426,7 +426,7 @@ await supabase.from("notifications").insert({
           <table>
             <thead><tr>
               <th>Nimi</th><th>Sähköposti</th><th>Osasto</th>
-              <th>Pvm</th><th>Tyyppi</th><th>Tunnit</th>
+              <th>Pvm</th><th>Tyyppi</th><th>Kesto</th>
             </tr></thead>
             <tbody>${rowsHtml}</tbody>
           </table>
@@ -440,7 +440,7 @@ await supabase.from("notifications").insert({
     }
   };
 
-  // 5) Import CSV (email,work_date,hours)
+ // 5) Import CSV (email,work_date,minutes)
   const handleImport = () => fileInputRef.current?.click();
 
   const onImportFile = async (file: File) => {
@@ -459,9 +459,9 @@ await supabase.from("notifications").insert({
       const header = lines[0].split(",").map((s) => s.trim().toLowerCase());
       const emailIdx = header.indexOf("email");
       const dateIdx = header.indexOf("work_date");
-      const hoursIdx = header.indexOf("hours");
-      if (emailIdx === -1 || dateIdx === -1 || hoursIdx === -1) {
-        toast.error('Odotettu header: "email,work_date,hours"');
+      const minutesIdx = header.indexOf("minutes");
+      if (emailIdx === -1 || dateIdx === -1 || minutesIdx === -1) {
+        toast.error('Odotettu header: "email,work_date,minutes"');
         return;
       }
 
@@ -475,8 +475,19 @@ await supabase.from("notifications").insert({
         if (cols.length < 3) continue;
         const email = cols[emailIdx].toLowerCase();
         const d = cols[dateIdx];
-        const h = parseFloat(cols[hoursIdx]);
-        if (!email || !d || isNaN(h)) continue;
+        const raw = cols[minutesIdx];
+        let mins = 0;
+        if (/^\\d+$/.test(raw)) {
+          mins = parseInt(raw, 10);
+        } else {
+          const match = raw.match(/(?:(\\d+)h)?\\s*(?:(\\d+)m)?/);
+          if (match) {
+            const h = parseInt(match[1] ?? "0", 10);
+            const m = parseInt(match[2] ?? "0", 10);
+            mins = h * 60 + m;
+          }
+        }
+        if (!email || !d || isNaN(mins)) continue;
         const emp = byEmail.get(email);
         if (!emp) {
           bad.push(lines[i]);
@@ -485,8 +496,8 @@ await supabase.from("notifications").insert({
         batch.push({
           employee_id: emp.id,
           work_date: d,
-          type: h > 0 ? "normal" : "normal",
-          hours: h > 0 ? h : 0,
+          type: "normal",
+          minutes: mins,
         });
       }
 

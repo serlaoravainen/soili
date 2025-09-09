@@ -23,6 +23,8 @@ import TimeOffRequestForm from './TimeOffRequestForm';
 import ShiftChangeRequestForm from './ShiftChangeRequestForm';
 import EmployeeNotificationCenter from './EmployeeNotificationCenter';
 import EmployeeScheduleControls from './EmployeeScheduleControls';
+import { formatMinutes } from "@/lib/timeUtils";
+
 
 type TimeOffRow = {
   id: string;
@@ -174,7 +176,8 @@ setShiftChangeRequests(
 
  const totalHoursThisWeek = (currentEmployee.shifts ?? [])
    .slice(0, 7)
-   .reduce((total, shift) => total + (shift.hours || 0), 0);
+   .reduce((total, shift) => total + (shift.minutes || 0), 0);
+
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('fi-FI', {
@@ -506,7 +509,7 @@ setShiftChangeRequests(
                             {formatDate(request.currentDate)} → {formatDate(request.requestedDate)}
                           </p>
                           <p><Clock className="w-4 h-4 inline mr-2" />
-                            {request.currentShift.hours}h → {request.requestedShift?.hours || 'Vapaa'}h
+                            {request.requestedShift?.minutes ? formatMinutes(request.requestedShift.minutes) : 'Vapaa'}
                           </p>
                         </div>
                         {request.message && (
