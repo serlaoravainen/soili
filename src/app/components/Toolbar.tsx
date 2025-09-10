@@ -121,16 +121,11 @@ const canRedo = useScheduleStore((s) => s.redoStack.length > 0);
 const saveAll = useScheduleStore((s) => s.saveAll);
 const dirty = useScheduleStore((s) => s.dirty);
 
-// Julkaisu / peruutus
-async function handlePublish() {
-  const { publishShifts } = useScheduleStore.getState();
-  await publishShifts();
-}
-
-async function handleUnpublish() {
-  const { unpublishShifts } = useScheduleStore.getState();
-  await unpublishShifts();
-}
+// Julkaise vuorot
+const handlePublish = async () => {
+  console.log("Klikattu Julkaise");
+  await useScheduleStore.getState().publishShifts();
+};
 
 // Automaattinen tallennus debounce-logiikalla
 useEffect(() => {
@@ -552,25 +547,14 @@ await supabase.from("notifications").insert({
 
             <Separator orientation="vertical" className="h-8" />
 
-{useScheduleStore((s) => s.publishStatus) === "pending" ? (
-  <Button
-    variant="outline"
-    onClick={handleUnpublish}
-    className="border-red-500 text-red-700"
-  >
-    <X className="w-4 h-4 mr-2" />
-    Peru julkaisu
-  </Button>
-) : (
-  <Button
-    variant="outline"
-    onClick={handlePublish}
-    className="border-emerald-500 text-emerald-700"
-  >
-    <Check className="w-4 h-4 mr-2" />
-    Julkaise vuorot
-  </Button>
-)}
+ <Button
+   variant="outline"
+   onClick={handlePublish}
+   className="border-emerald-500 text-emerald-700"
+ >
+   <Check className="w-4 h-4 mr-2" />
+   Julkaise vuorot
+ </Button>
 
 
 

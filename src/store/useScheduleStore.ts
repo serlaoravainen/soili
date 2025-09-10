@@ -278,10 +278,8 @@ saveAll: async () => {
 
 publishShifts: async () => {
   try {
-    // 1. Varmista että kaikki muutokset tallessa
     await get().saveAll();
 
-    // 2. Käytä RPC:ta joka hoitaa julkaisemisen + shift_publications -merkinnän
     const { startDateISO, days } = get();
     const endDate = new Date(startDateISO);
     endDate.setDate(endDate.getDate() + days - 1);
@@ -293,35 +291,14 @@ publishShifts: async () => {
     });
     if (error) throw error;
 
-
-  set({ publishStatus: "pending" });
-  toast.success("Vuorot julkaistu! Sähköpostit lähtevät 30 minuutin viiveellä.");
+    set({ publishStatus: "sent" });
+    toast.success("Vuorot julkaistu ja lähetetty heti!");
   } catch (e) {
-    console.error(e);
+    console.error("publishShifts error:", e);
     toast.error("Julkaisu epäonnistui");
   }
 },
 
-unpublishShifts: async () => {
-  try {
-    const { startDateISO, days } = get();
-    const endDate = new Date(startDateISO);
-    endDate.setDate(endDate.getDate() + days - 1);
-    const endISO = endDate.toISOString().slice(0, 10);
-
-    const { error } = await supabase.rpc("unpublish_shifts", {
-      _start_date: startDateISO,
-      _end_date: endISO,
-    });
-    if (error) throw error;
-
-    set({ publishStatus: "canceled" });
-    toast.success("Julkaisu peruttu ja merkattu perutuksi.");
-  } catch (e) {
-    console.error(e);
-    toast.error("Peruutus epäonnistui");
-  }
-},
 
 
     undo: () => {
