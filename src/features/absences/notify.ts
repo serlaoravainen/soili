@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supaBaseClient";
-import { sendEmail } from "@/lib/sendEmail";
+import { insertEmailQueue } from "@/lib/insertEmailQueue";
 import { useSettingsStore } from "@/store/useSettingsStore";
 
 export type AbsenceDecision = "approved" | "declined";
@@ -54,7 +54,7 @@ export async function notifyAbsenceDecision(args: {
   parts.push("\nTerveisin,\nSoili");
 
   try {
-    await sendEmail({
+    await insertEmailQueue({
       to: valid.map(e => e.email),
       subject,
       text: parts.join(""),
