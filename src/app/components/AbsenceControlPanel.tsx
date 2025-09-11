@@ -22,6 +22,7 @@ import { supabase } from '@/lib/supaBaseClient';
 import { notifyAbsenceDecision } from '@/features/absences/notify';
 import { useSettingsStore } from "@/store/useSettingsStore";
 
+
 const AbsenceControlPanel = () => {
   const [requests, setRequests] = useState<AbsenceRequest[]>([]);
   const [adminResponse, setAdminResponse] = useState('');
@@ -33,7 +34,7 @@ const AbsenceControlPanel = () => {
   useEffect(() => {
     const fetchAbsences = async () => {
 const { data, error } = await supabase
-  .from('absences')
+  .from('time_off_requests')
   .select(`
     id,
     employee_id,
@@ -43,7 +44,7 @@ const { data, error } = await supabase
     message,
     status,
     submitted_at,
-    employees:employees!absences_employee_id_fkey ( name )
+    employees:employees!time_off_requests_employee_id_fkey ( name )
   `)
   .order('submitted_at', { ascending: false });
 
@@ -109,7 +110,7 @@ const handleApprove = async (requestId: string) => {
   setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'approved' } : r));
 
   const target = requests.find(r => r.id === requestId);
-  const { error } = await supabase.from('absences').update({ status: 'approved' }).eq('id', requestId);
+  const { error } = await supabase.from('time_off_requests').update({ status: 'approved' }).eq('id', requestId);
   if (error) {
     console.error('[ABSENCE APPROVE ERROR]', error.code, error.message, error.details);
     // revert
@@ -121,7 +122,7 @@ const handleApprove = async (requestId: string) => {
   if (emailEnabled && target) {
     try {
       await notifyAbsenceDecision({
-        employeeId: target.employeeId,
+        employeeIds: [target.employeeId],
         status: "approved",
         startDate: target.startDate,
         endDate: target.endDate || null,
@@ -140,7 +141,7 @@ const handleDecline = async (requestId: string) => {
   setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'declined' } : r));
 
   const target = requests.find(r => r.id === requestId);
-  const { error } = await supabase.from('absences').update({ status: 'declined' }).eq('id', requestId);
+  const { error } = await supabase.from('time_off_requests').update({ status: 'declined' }).eq('id', requestId);
   if (error) {
     console.error('[ABSENCE DECLINE ERROR]', error.code, error.message, error.details);
     setRequests(prev => prev.map(r => r.id === requestId ? { ...r, status: 'pending' } : r));
@@ -151,7 +152,7 @@ const handleDecline = async (requestId: string) => {
   if (emailEnabled && target) {
     try {
       await notifyAbsenceDecision({
-        employeeId: target.employeeId,
+        employeeIds: [target.employeeId],
         status: "declined",
         startDate: target.startDate,
         endDate: target.endDate || null,

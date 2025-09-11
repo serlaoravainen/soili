@@ -10,12 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Calendar, Clock, Send, AlertCircle } from 'lucide-react';
 import { EmployeeTimeOffRequest } from '../types';
 import { toast } from 'sonner';
+import { supabase } from "@/lib/supaBaseClient";
 
-interface TimeOffRequestFormProps {
-  onSubmit: (request: Omit<EmployeeTimeOffRequest, 'id' | 'employeeId' | 'submittedAt' | 'status'>) => void;
-}
 
-const TimeOffRequestForm: React.FC<TimeOffRequestFormProps> = ({ onSubmit }) => {
+const TimeOffRequestForm: React.FC = () => {
   const [formData, setFormData] = useState({
     startDate: '',
     endDate: '',
@@ -68,31 +66,44 @@ const TimeOffRequestForm: React.FC<TimeOffRequestFormProps> = ({ onSubmit }) => 
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!validateForm()) {
       toast.error('Tarkista lomakkeen tiedot');
       return;
     }
 
-    onSubmit({
-      startDate: formData.startDate,
-      endDate: formData.endDate,
-      reason: formData.reason,
-      message: formData.message || undefined
-    });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        toast.error("Et ole kirjautunut sisään");
+        return;
+      }
 
-    // Reset form
-    setFormData({
-      startDate: '',
-      endDate: '',
-      reason: '',
-      message: ''
-    });
+      const res = await fetch("/api/timeoff", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          startDate: formData.startDate,
+          endDate: formData.endDate,
+          reason: formData.reason,
+          message: formData.message || undefined,
+        }),
+      });
 
-    setErrors({});
-    toast.success('Poissaolopyyntö lähetetty onnistuneesti!');
+     const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Virhe tallennuksessa");
+
+      toast.success("Poissaolopyyntö lähetetty onnistuneesti!");
+      setFormData({ startDate: "", endDate: "", reason: "", message: "" });
+      setErrors({});
+    } catch (err: any) {
+      toast.error(err.message || "Virhe poissaolopyynnön lähetyksessä");
+    }
   };
 
   const calculateDays = () => {
