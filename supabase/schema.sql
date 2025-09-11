@@ -1,4 +1,8 @@
 
+\restrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
+
+-- Dumped from database version 17.4
+-- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -161,19 +165,132 @@ ALTER FUNCTION "auth"."uid"() OWNER TO "supabase_auth_admin";
 COMMENT ON FUNCTION "auth"."uid"() IS 'Deprecated. Use auth.jwt() -> ''sub'' instead.';
 
 
+--
+-- Name: get_auth(text); Type: FUNCTION; Schema: pgbouncer; Owner: -
+--
 
-CREATE OR REPLACE FUNCTION "public"."current_role"() RETURNS "text"
-    LANGUAGE "sql" STABLE
+CREATE FUNCTION pgbouncer.get_auth(p_usename text) RETURNS TABLE(username text, password text)
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $_$
+begin
+    raise debug 'PgBouncer auth request: %', p_usename;
+
+    return query
+    select 
+        rolname::text, 
+        case when rolvaliduntil < now() 
+            then null 
+            else rolpassword::text 
+        end 
+    from pg_authid 
+    where rolname=$1 and rolcanlogin;
+end;
+$_$;
+
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: mail_jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mail_jobs (
+    id bigint NOT NULL,
+    type text NOT NULL,
+    payload jsonb NOT NULL,
+    status text DEFAULT 'queued'::text NOT NULL,
+    attempt_count integer DEFAULT 0 NOT NULL,
+    last_error text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    processed_at timestamp with time zone,
+    job_key text GENERATED ALWAYS AS (
+CASE
+    WHEN (type = 'admin_new_absence'::text) THEN (((((payload ->> 'employee_id'::text) || '|'::text) || (payload ->> 'start_date'::text)) || '|'::text) || COALESCE((payload ->> 'end_date'::text), ''::text))
+    ELSE NULL::text
+END) STORED
+);
+
+
+--
+-- Name: claim_employee_jobs(text, timestamp with time zone, text[], integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.claim_employee_jobs(p_employee_id text, p_since timestamp with time zone, p_types text[], p_limit integer DEFAULT 200) RETURNS SETOF public.mail_jobs
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+  with candidate as (
+    select id
+    from public.mail_jobs
+    where status = 'queued'
+      and created_at >= p_since
+      and type = any(p_types)
+      and payload->>'employee_id' = p_employee_id
+    order by created_at asc
+    limit p_limit
+  ),
+  locked as (
+    update public.mail_jobs m
+      set status = 'processing',
+          processed_at = now(),
+          attempt_count = m.attempt_count + 1
+    where m.id in (select id from candidate)
+      and m.status = 'queued'
+    returning m.*
+  )
+  select * from locked;
+$$;
+
+
+--
+-- Name: claim_employee_jobs(uuid, timestamp with time zone, text[], integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.claim_employee_jobs(p_employee_id uuid, p_since timestamp with time zone, p_types text[], p_limit integer DEFAULT 200) RETURNS SETOF public.mail_jobs
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+  return query
+  with cte as (
+    select id
+    from mail_jobs
+    where status = 'queued'
+      and (payload->>'employee_id') = p_employee_id::text
+      and type = any(p_types)
+      and created_at >= p_since
+    order by created_at asc
+    limit p_limit
+    for update skip locked
+  )
+  update mail_jobs m
+  set status = 'processing'
+  from cte
+  where m.id = cte.id
+  returning m.*;
+end;
+$$;
+
+
+--
+-- Name: current_role(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public."current_role"() RETURNS text
+    LANGUAGE sql STABLE
     AS $$
   select current_setting('role');
 $$;
 
 
-ALTER FUNCTION "public"."current_role"() OWNER TO "postgres";
+--
+-- Name: delete_shifts(uuid, date[]); Type: FUNCTION; Schema: public; Owner: -
+--
 
-
-CREATE OR REPLACE FUNCTION "public"."delete_shifts"("_employee_id" "uuid", "_dates" "date"[]) RETURNS "void"
-    LANGUAGE "plpgsql" SECURITY DEFINER
+CREATE FUNCTION public.delete_shifts(_employee_id uuid, _dates date[]) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 begin
   delete from public.shifts
@@ -183,23 +300,68 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."delete_shifts"("_employee_id" "uuid", "_dates" "date"[]) OWNER TO "postgres";
+--
+-- Name: enqueue_admin_new_absence(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-
-CREATE OR REPLACE FUNCTION "public"."delete_shifts_bulk"("_emp" "uuid", "_dates" "date"[]) RETURNS "void"
-    LANGUAGE "sql"
+CREATE FUNCTION public.enqueue_admin_new_absence() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
     AS $$
-  DELETE FROM public.shifts
-  WHERE employee_id = _emp
-    AND work_date = ANY(_dates);
+DECLARE
+  cfg RECORD;
+  _end_date date;
+BEGIN
+  SELECT email_notifications, absence_requests, admin_notification_emails
+    INTO cfg
+  FROM public.app_settings
+  WHERE id = 1;
+
+  IF COALESCE(cfg.email_notifications,false) IS NOT TRUE THEN RETURN NEW; END IF;
+  IF COALESCE(cfg.absence_requests,false)     IS NOT TRUE THEN RETURN NEW; END IF;
+  IF cfg.admin_notification_emails IS NULL
+     OR array_length(cfg.admin_notification_emails,1) < 1 THEN
+    RETURN NEW;
+  END IF;
+
+  -- normalisoi: jos end_date puuttuu → start_date
+  _end_date := COALESCE(NEW.end_date, NEW.start_date);
+
+  INSERT INTO public.mail_jobs (type, status, attempt_count, payload)
+  VALUES (
+    'admin_new_absence',
+    'queued',
+    0,
+    jsonb_build_object(
+      'employee_id', NEW.employee_id,
+      'start_date', NEW.start_date,
+      'end_date',   _end_date,
+      'reason',     NEW.reason
+    )
+  )
+  ON CONFLICT (job_key) DO NOTHING;  -- nyt toimii, koska on UNIQUE CONSTRAINT
+
+  -- älä kaada inserttiä vaikka HTTP failaa
+  BEGIN
+    PERFORM net.http_post(
+      url     := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/mailer',
+      headers := jsonb_build_object('Authorization','Bearer '||'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11c3JtcGJsc2F6eGNyaHd0aHRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4NjI3NzIsImV4cCI6MjA3MTQzODc3Mn0.k6zU1Eiif-06XVvlHMugfxsL-ZFnXiTuf5Qg28r5x8A'),
+      body    := '{}'::jsonb
+    );
+  EXCEPTION WHEN OTHERS THEN
+    NULL;
+  END;
+
+  RETURN NEW;
+END;
 $$;
 
 
-ALTER FUNCTION "public"."delete_shifts_bulk"("_emp" "uuid", "_dates" "date"[]) OWNER TO "postgres";
+--
+-- Name: enqueue_employee_new_shift(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-
-CREATE OR REPLACE FUNCTION "public"."enqueue_employee_new_shift"() RETURNS "trigger"
-    LANGUAGE "plpgsql"
+CREATE FUNCTION public.enqueue_employee_new_shift() RETURNS trigger
+    LANGUAGE plpgsql
     AS $$
 BEGIN
   RETURN NEW;
@@ -242,11 +404,47 @@ end;
 $$;
 
 
-ALTER FUNCTION "public"."enqueue_employee_shift_changed"() OWNER TO "postgres";
+--
+-- Name: enqueue_employee_shift_deleted(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_employee_shift_deleted() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.published IS TRUE THEN
+    -- sähköposti
+    INSERT INTO public.mail_jobs(type, payload)
+    VALUES ('employee_shift_deleted', jsonb_build_object(
+      'employee_id', OLD.employee_id,
+      'work_date',   OLD.work_date::text,
+      'start',       OLD.start_time::text,
+      'end',         OLD.end_time::text
+    ));
+
+    -- notifikaatio
+    INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+    VALUES (
+      OLD.employee_id,
+      'shift_declined',
+      'Vuorosi on peruttu',
+      'Päivämäärä: ' || OLD.work_date::text,
+      now(),
+      FALSE,
+      'medium'
+    );
+  END IF;
+  RETURN OLD;
+END;
+$$;
 
 
-CREATE OR REPLACE FUNCTION "public"."enqueue_on_publish_flip"() RETURNS "trigger"
-    LANGUAGE "plpgsql"
+--
+-- Name: enqueue_on_publish_flip(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.enqueue_on_publish_flip() RETURNS trigger
+    LANGUAGE plpgsql
     AS $$
 BEGIN
   RETURN NEW;
@@ -333,11 +531,12 @@ begin
 end $$;
 
 
-ALTER FUNCTION "public"."notify_employee_added"() OWNER TO "postgres";
+--
+-- Name: publish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
 
-
-CREATE OR REPLACE FUNCTION "public"."prevent_zero_minutes"() RETURNS "trigger"
-    LANGUAGE "plpgsql"
+CREATE FUNCTION public.publish_shifts(_start_date date, _end_date date) RETURNS void
+    LANGUAGE plpgsql
     AS $$
 BEGIN
   IF NEW.minutes IS NULL OR NEW.minutes <= 0 THEN
@@ -348,69 +547,99 @@ END;
 $$;
 
 
-ALTER FUNCTION "public"."prevent_zero_minutes"() OWNER TO "postgres";
+--
+-- Name: set_updated_at(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-
-CREATE OR REPLACE FUNCTION "public"."publish_shifts_debug"("_start_date" "date", "_end_date" "date") RETURNS "jsonb"
-    LANGUAGE "plpgsql" SECURITY DEFINER
+CREATE FUNCTION public.set_updated_at() RETURNS trigger
+    LANGUAGE plpgsql
     AS $$
-declare
-  ts timestamp := now();
-  pub_id uuid;
-  emails text[];
-  result jsonb;
 begin
-  -- Merkitse vuorot julkaistuiksi
+  new.updated_at = now();
+  return new;
+end; $$;
+
+
+--
+-- Name: trg_absence_enqueue_job(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trg_absence_enqueue_job() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+begin
+  insert into mail_jobs (type, payload)
+  values (
+    'admin_new_absence',
+    jsonb_build_object(
+      'absence_id', new.id,
+      'employee_id', new.employee_id,
+      'start_date', new.start_date,
+      'end_date', new.end_date,
+      'reason', new.reason
+    )
+  );
+  return new;
+end;
+$$;
+
+
+--
+-- Name: unpublish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.unpublish_shifts(_start_date date, _end_date date) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+begin
   update public.shifts
   set published = true, published_at = ts
   where work_date between _start_date and _end_date
     and published = false;
 
-  -- Luo julkaisun merkintä
-  insert into public.shift_publications (start_date, end_date, status, published_at)
-  values (_start_date, _end_date, 'sent', ts)
-  returning id into pub_id;
+  update public.shift_publications
+  set status = 'canceled'
+  where start_date = _start_date
+    and end_date = _end_date;
+end;
+$$;
 
-  -- Luo in-app ilmoitukset
-  insert into public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-  select distinct s.employee_id,
-         'schedule_published',
-         'Uusi aikataulu julkaistu',
-         'Tarkista uudet työvuorosi. Julkaisu: ' || pub_id,
-         ts, false, 'high'
-  from public.shifts s
-  where s.work_date between _start_date and _end_date
-    and s.published = true
-  group by s.employee_id;
 
-  -- Kerää emailit
-  select array_agg(distinct e.email)
-  into emails
-  from public.shifts s
-  join public.employees e on e.id = s.employee_id
-  where s.work_date between _start_date and _end_date
-    and s.published = true
-    and e.email is not null;
+--
+-- Name: upsert_shifts(uuid, date, text, integer); Type: FUNCTION; Schema: public; Owner: -
+--
 
-  -- Lähetä emailit yhdellä POSTilla
-  if emails is not null and array_length(emails,1) > 0 then
-    select net.http_post(
-      url := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/sendemail',
-      headers := jsonb_build_object(
-        'Authorization','Bearer ' || 'TÄHÄN_SERVICE_ROLE_KEY',
-        'Content-Type','application/json'
-      ),
-      body := jsonb_build_object(
-        'to', to_jsonb(emails),
-        'subject','Uudet vuorot julkaistu',
-        'text','Sinulle on julkaistu uusia vuoroja. Tarkista työvuorosi sovelluksesta.'
-      )
-    ) into result;
+CREATE FUNCTION public.upsert_shifts(_employee_id uuid, _work_date date, _type text, _minutes integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+begin
+  insert into public.shifts (employee_id, work_date, type, minutes)
+  values (_employee_id, _work_date, _type, _minutes)
+  on conflict (employee_id, work_date)
+  do update set
+    type = excluded.type,
+    minutes = excluded.minutes;
+end;
+$$;
 
-    return jsonb_build_object('emails', emails, 'http_post', result);
-  else
-    return jsonb_build_object('emails','[]','error','no emails found');
-  end if;
+
+--
+-- Name: upsert_shifts_bulk(jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.upsert_shifts_bulk(_rows jsonb) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+begin
+  insert into shifts (employee_id, work_date, type, minutes)
+  select (r->>'employee_id')::uuid,
+         (r->>'work_date')::date,
+         r->>'type',
+         (r->>'minutes')::int
+  from jsonb_array_elements(_rows) as r
+  on conflict (employee_id, work_date)
+  do update set type = excluded.type,
+                minutes = excluded.minutes;
 end;
 $$;
 
@@ -902,6 +1131,10 @@ END;
 $$;
 
 
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
 ALTER FUNCTION "storage"."update_updated_at_column"() OWNER TO "supabase_storage_admin";
 
 SET default_tablespace = '';
@@ -1318,211 +1551,390 @@ CREATE TABLE IF NOT EXISTS "public"."app_settings" (
 );
 
 
-ALTER TABLE "public"."app_settings" OWNER TO "postgres";
+--
+-- Name: employee_notifications; Type: TABLE; Schema: public; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."debug_log" (
-    "id" bigint NOT NULL,
-    "context" "text",
-    "message" "text",
-    "created_at" timestamp with time zone DEFAULT "now"()
+CREATE TABLE public.employee_notifications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    employee_id uuid,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text NOT NULL,
+    priority text DEFAULT 'low'::text NOT NULL,
+    is_read boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
-ALTER TABLE "public"."debug_log" OWNER TO "postgres";
+--
+-- Name: employees; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.employees (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    email text,
+    department text,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp without time zone DEFAULT now(),
+    auth_user_id uuid,
+    role text DEFAULT 'employee'::text,
+    CONSTRAINT employees_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'employee'::text])))
+);
 
 
-CREATE SEQUENCE IF NOT EXISTS "public"."debug_log_id_seq"
+--
+-- Name: shift_publications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.shift_publications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    published_at timestamp with time zone DEFAULT now() NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL
+);
+
+
+--
+-- Name: TABLE shift_publications; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.shift_publications IS 'Tallentaa vuorojen julkaisun ja sen tilan (pending/sent/canceled).';
+
+
+--
+-- Name: latest_publications_overview; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.latest_publications_overview AS
+ SELECT sp.id AS publication_id,
+    sp.start_date,
+    sp.end_date,
+    sp.status AS publication_status,
+    count(j.*) FILTER (WHERE (j.status = 'queued'::text)) AS jobs_queued,
+    count(j.*) FILTER (WHERE (j.status = 'processing'::text)) AS jobs_processing,
+    count(j.*) FILTER (WHERE (j.status = 'sent'::text)) AS jobs_sent
+   FROM (public.shift_publications sp
+     LEFT JOIN public.mail_jobs j ON ((((((j.payload ->> 'work_date'::text))::date >= sp.start_date) AND (((j.payload ->> 'work_date'::text))::date <= sp.end_date)) AND (j.type = 'shift_publication'::text))))
+  GROUP BY sp.id, sp.start_date, sp.end_date, sp.status
+  ORDER BY sp.start_date DESC;
+
+
+--
+-- Name: mail_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.mail_jobs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.mail_jobs_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
     NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."debug_log_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."debug_log_id_seq" OWNED BY "public"."debug_log"."id";
-
-
-
-CREATE TABLE IF NOT EXISTS "public"."email_send_log" (
-    "id" bigint NOT NULL,
-    "pub_id" "uuid" NOT NULL,
-    "email" "text" NOT NULL,
-    "sent_at" timestamp with time zone DEFAULT "now"()
+    CACHE 1
 );
 
 
-ALTER TABLE "public"."email_send_log" OWNER TO "postgres";
+--
+-- Name: notifications; Type: TABLE; Schema: public; Owner: -
+--
 
-
-CREATE SEQUENCE IF NOT EXISTS "public"."email_send_log_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
-ALTER SEQUENCE "public"."email_send_log_id_seq" OWNER TO "postgres";
-
-
-ALTER SEQUENCE "public"."email_send_log_id_seq" OWNED BY "public"."email_send_log"."id";
-
-
-
-CREATE TABLE IF NOT EXISTS "public"."employee_notifications" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "employee_id" "uuid",
-    "type" "text" NOT NULL,
-    "title" "text" NOT NULL,
-    "message" "text" NOT NULL,
-    "priority" "text" DEFAULT 'low'::"text" NOT NULL,
-    "is_read" boolean DEFAULT false NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+CREATE TABLE public.notifications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_read boolean DEFAULT false NOT NULL,
+    CONSTRAINT notifications_type_check CHECK ((type = ANY (ARRAY['absence_request'::text, 'absence_approved'::text, 'absence_declined'::text, 'employee_added'::text, 'shift_auto'::text])))
 );
 
 
-ALTER TABLE "public"."employee_notifications" OWNER TO "postgres";
+--
+-- Name: profiles; Type: TABLE; Schema: public; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."employees" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "name" "text" NOT NULL,
-    "email" "text",
-    "department" "text",
-    "is_active" boolean DEFAULT true NOT NULL,
-    "created_at" timestamp without time zone DEFAULT "now"(),
-    "auth_user_id" "uuid",
-    "role" "text" DEFAULT 'employee'::"text",
-    CONSTRAINT "employees_role_check" CHECK (("role" = ANY (ARRAY['admin'::"text", 'employee'::"text"])))
+CREATE TABLE public.profiles (
+    id uuid NOT NULL,
+    email text,
+    is_admin boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
-ALTER TABLE "public"."employees" OWNER TO "postgres";
+--
+-- Name: publication_jobs_debug; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.publication_jobs_debug AS
+ SELECT sp.id AS publication_id,
+    sp.start_date,
+    sp.end_date,
+    sp.status AS publication_status,
+    j.id AS job_id,
+    j.status AS job_status,
+    j.created_at AS job_created,
+    j.processed_at AS job_processed,
+    (j.payload ->> 'employee_id'::text) AS employee_id,
+    (j.payload ->> 'work_date'::text) AS work_date
+   FROM (public.shift_publications sp
+     LEFT JOIN public.mail_jobs j ON ((((((j.payload ->> 'work_date'::text))::date >= sp.start_date) AND (((j.payload ->> 'work_date'::text))::date <= sp.end_date)) AND (j.type = 'shift_publication'::text))))
+  ORDER BY sp.start_date DESC, j.created_at DESC;
 
 
-CREATE TABLE IF NOT EXISTS "public"."notifications" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "type" "text" NOT NULL,
-    "title" "text" NOT NULL,
-    "message" "text" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "is_read" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "notifications_type_check" CHECK (("type" = ANY (ARRAY['absence_request'::"text", 'absence_approved'::"text", 'absence_declined'::"text", 'employee_added'::"text", 'shift_auto'::"text"])))
+--
+-- Name: shift_change_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.shift_change_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    employee_id uuid,
+    target_employee_id uuid,
+    current_shift_date date NOT NULL,
+    requested_shift_date date NOT NULL,
+    reason text,
+    message text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    submitted_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
-ALTER TABLE "public"."notifications" OWNER TO "postgres";
+--
+-- Name: shifts; Type: TABLE; Schema: public; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."profiles" (
-    "id" "uuid" NOT NULL,
-    "email" "text",
-    "is_admin" boolean DEFAULT false NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+CREATE TABLE public.shifts (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    employee_id uuid NOT NULL,
+    work_date date NOT NULL,
+    start_time time without time zone,
+    end_time time without time zone,
+    type text DEFAULT 'normal'::text NOT NULL,
+    is_locked boolean DEFAULT false NOT NULL,
+    note text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    published boolean DEFAULT false NOT NULL,
+    published_at timestamp with time zone,
+    minutes integer DEFAULT 0 NOT NULL,
+    CONSTRAINT shifts_time_order_chk CHECK (((start_time IS NULL) OR (end_time IS NULL) OR (start_time < end_time))),
+    CONSTRAINT shifts_type_allowed_chk CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text]))),
+    CONSTRAINT shifts_type_check CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text])))
 );
 
 
-ALTER TABLE "public"."profiles" OWNER TO "postgres";
+--
+-- Name: time_off_requests; Type: TABLE; Schema: public; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."shift_change_requests" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "employee_id" "uuid",
-    "target_employee_id" "uuid",
-    "current_shift_date" "date" NOT NULL,
-    "requested_shift_date" "date" NOT NULL,
-    "reason" "text",
-    "message" "text",
-    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "submitted_at" timestamp with time zone DEFAULT "now"() NOT NULL
+CREATE TABLE public.time_off_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    employee_id uuid,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    reason text,
+    message text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    submitted_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
 ALTER TABLE "public"."shift_change_requests" OWNER TO "postgres";
 
 
-CREATE TABLE IF NOT EXISTS "public"."shift_publications" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "start_date" "date" NOT NULL,
-    "end_date" "date" NOT NULL,
-    "published_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "status" "text" DEFAULT 'pending'::"text" NOT NULL
+CREATE TABLE public.time_periods (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
 );
 
 
-ALTER TABLE "public"."shift_publications" OWNER TO "postgres";
+--
+-- Name: messages; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+)
+PARTITION BY RANGE (inserted_at);
 
 
-COMMENT ON TABLE "public"."shift_publications" IS 'Tallentaa vuorojen julkaisun ja sen tilan (pending/sent/canceled).';
+--
+-- Name: messages_2025_09_06; Type: TABLE; Schema: realtime; Owner: -
+--
 
-
-
-CREATE TABLE IF NOT EXISTS "public"."shifts" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "employee_id" "uuid" NOT NULL,
-    "work_date" "date" NOT NULL,
-    "start_time" time without time zone,
-    "end_time" time without time zone,
-    "type" "text" DEFAULT 'normal'::"text" NOT NULL,
-    "is_locked" boolean DEFAULT false NOT NULL,
-    "note" "text",
-    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
-    "published" boolean DEFAULT false NOT NULL,
-    "published_at" timestamp with time zone,
-    "minutes" integer NOT NULL,
-    CONSTRAINT "minutes_positive" CHECK (("minutes" > 0)),
-    CONSTRAINT "shifts_time_order_chk" CHECK ((("start_time" IS NULL) OR ("end_time" IS NULL) OR ("start_time" < "end_time"))),
-    CONSTRAINT "shifts_type_allowed_chk" CHECK (("type" = ANY (ARRAY['normal'::"text", 'locked'::"text", 'absent'::"text", 'holiday'::"text"]))),
-    CONSTRAINT "shifts_type_check" CHECK (("type" = ANY (ARRAY['normal'::"text", 'locked'::"text", 'absent'::"text", 'holiday'::"text"])))
+CREATE TABLE realtime.messages_2025_09_06 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 
-ALTER TABLE "public"."shifts" OWNER TO "postgres";
+--
+-- Name: messages_2025_09_07; Type: TABLE; Schema: realtime; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."time_off_requests" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "employee_id" "uuid",
-    "start_date" "date" NOT NULL,
-    "end_date" "date" NOT NULL,
-    "reason" "text",
-    "message" "text",
-    "status" "text" DEFAULT 'pending'::"text" NOT NULL,
-    "submitted_at" timestamp with time zone DEFAULT "now"() NOT NULL
+CREATE TABLE realtime.messages_2025_09_07 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 
-ALTER TABLE "public"."time_off_requests" OWNER TO "postgres";
+--
+-- Name: messages_2025_09_08; Type: TABLE; Schema: realtime; Owner: -
+--
 
-
-CREATE TABLE IF NOT EXISTS "public"."time_periods" (
-    "id" "uuid" DEFAULT "gen_random_uuid"() NOT NULL,
-    "name" "text" NOT NULL,
-    "start_date" "date" NOT NULL,
-    "end_date" "date" NOT NULL,
-    "created_at" timestamp with time zone DEFAULT "now"()
+CREATE TABLE realtime.messages_2025_09_08 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
 );
 
 
-ALTER TABLE "public"."time_periods" OWNER TO "postgres";
+--
+-- Name: messages_2025_09_09; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_09 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
 
 
-CREATE TABLE IF NOT EXISTS "storage"."buckets" (
-    "id" "text" NOT NULL,
-    "name" "text" NOT NULL,
-    "owner" "uuid",
-    "created_at" timestamp with time zone DEFAULT "now"(),
-    "updated_at" timestamp with time zone DEFAULT "now"(),
-    "public" boolean DEFAULT false,
-    "avif_autodetection" boolean DEFAULT false,
-    "file_size_limit" bigint,
-    "allowed_mime_types" "text"[],
-    "owner_id" "text"
+--
+-- Name: messages_2025_09_10; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_10 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_11; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_11 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_12; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_12 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: schema_migrations; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.schema_migrations (
+    version bigint NOT NULL,
+    inserted_at timestamp(0) without time zone
+);
+
+
+--
+-- Name: subscription; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.subscription (
+    id bigint NOT NULL,
+    subscription_id uuid NOT NULL,
+    entity regclass NOT NULL,
+    filters realtime.user_defined_filter[] DEFAULT '{}'::realtime.user_defined_filter[] NOT NULL,
+    claims jsonb NOT NULL,
+    claims_role regrole GENERATED ALWAYS AS (realtime.to_regrole((claims ->> 'role'::text))) STORED NOT NULL,
+    created_at timestamp without time zone DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+
+--
+-- Name: subscription_id_seq; Type: SEQUENCE; Schema: realtime; Owner: -
+--
+
+ALTER TABLE realtime.subscription ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME realtime.subscription_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: buckets; Type: TABLE; Schema: storage; Owner: -
+--
+
+CREATE TABLE storage.buckets (
+    id text NOT NULL,
+    name text NOT NULL,
+    owner uuid,
+    created_at timestamp with time zone DEFAULT now(),
+    updated_at timestamp with time zone DEFAULT now(),
+    public boolean DEFAULT false,
+    avif_autodetection boolean DEFAULT false,
+    file_size_limit bigint,
+    allowed_mime_types text[],
+    owner_id text
 );
 
 
@@ -1597,28 +2009,97 @@ CREATE TABLE IF NOT EXISTS "storage"."s3_multipart_uploads_parts" (
 );
 
 
-ALTER TABLE "storage"."s3_multipart_uploads_parts" OWNER TO "supabase_storage_admin";
+--
+-- Name: schema_migrations; Type: TABLE; Schema: supabase_migrations; Owner: -
+--
+
+CREATE TABLE supabase_migrations.schema_migrations (
+    version text NOT NULL,
+    statements text[],
+    name text
+);
 
 
-ALTER TABLE ONLY "auth"."refresh_tokens" ALTER COLUMN "id" SET DEFAULT "nextval"('"auth"."refresh_tokens_id_seq"'::"regclass");
+--
+-- Name: seed_files; Type: TABLE; Schema: supabase_migrations; Owner: -
+--
+
+CREATE TABLE supabase_migrations.seed_files (
+    path text NOT NULL,
+    hash text NOT NULL
+);
 
 
+--
+-- Name: messages_2025_09_06; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
 
-ALTER TABLE ONLY "public"."debug_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."debug_log_id_seq"'::"regclass");
-
-
-
-ALTER TABLE ONLY "public"."email_send_log" ALTER COLUMN "id" SET DEFAULT "nextval"('"public"."email_send_log_id_seq"'::"regclass");
-
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_06 FOR VALUES FROM ('2025-09-06 00:00:00') TO ('2025-09-07 00:00:00');
 
 
-ALTER TABLE ONLY "auth"."mfa_amr_claims"
-    ADD CONSTRAINT "amr_id_pk" PRIMARY KEY ("id");
+--
+-- Name: messages_2025_09_07; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_07 FOR VALUES FROM ('2025-09-07 00:00:00') TO ('2025-09-08 00:00:00');
 
 
+--
+-- Name: messages_2025_09_08; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
 
-ALTER TABLE ONLY "auth"."audit_log_entries"
-    ADD CONSTRAINT "audit_log_entries_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_08 FOR VALUES FROM ('2025-09-08 00:00:00') TO ('2025-09-09 00:00:00');
+
+
+--
+-- Name: messages_2025_09_09; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_09 FOR VALUES FROM ('2025-09-09 00:00:00') TO ('2025-09-10 00:00:00');
+
+
+--
+-- Name: messages_2025_09_10; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_10 FOR VALUES FROM ('2025-09-10 00:00:00') TO ('2025-09-11 00:00:00');
+
+
+--
+-- Name: messages_2025_09_11; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_11 FOR VALUES FROM ('2025-09-11 00:00:00') TO ('2025-09-12 00:00:00');
+
+
+--
+-- Name: messages_2025_09_12; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_12 FOR VALUES FROM ('2025-09-12 00:00:00') TO ('2025-09-13 00:00:00');
+
+
+--
+-- Name: refresh_tokens id; Type: DEFAULT; Schema: auth; Owner: -
+--
+
+ALTER TABLE ONLY auth.refresh_tokens ALTER COLUMN id SET DEFAULT nextval('auth.refresh_tokens_id_seq'::regclass);
+
+
+--
+-- Name: mfa_amr_claims amr_id_pk; Type: CONSTRAINT; Schema: auth; Owner: -
+--
+
+ALTER TABLE ONLY auth.mfa_amr_claims
+    ADD CONSTRAINT amr_id_pk PRIMARY KEY (id);
+
+
+--
+-- Name: audit_log_entries audit_log_entries_pkey; Type: CONSTRAINT; Schema: auth; Owner: -
+--
+
+ALTER TABLE ONLY auth.audit_log_entries
+    ADD CONSTRAINT audit_log_entries_pkey PRIMARY KEY (id);
 
 
 
@@ -1741,54 +2222,100 @@ ALTER TABLE ONLY "public"."app_settings"
     ADD CONSTRAINT "app_settings_pkey" PRIMARY KEY ("id");
 
 
+--
+-- Name: debug_log debug_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."debug_log"
-    ADD CONSTRAINT "debug_log_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."email_send_log"
-    ADD CONSTRAINT "email_send_log_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY public.debug_log
+    ADD CONSTRAINT debug_log_pkey PRIMARY KEY (id);
 
 
+--
+-- Name: email_send_log email_send_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."employee_notifications"
-    ADD CONSTRAINT "employee_notifications_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."employees"
-    ADD CONSTRAINT "employees_email_unique" UNIQUE ("email");
+ALTER TABLE ONLY public.email_send_log
+    ADD CONSTRAINT email_send_log_pkey PRIMARY KEY (id);
 
 
+--
+-- Name: employee_notifications employee_notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."employees"
-    ADD CONSTRAINT "employees_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."employees"
-    ADD CONSTRAINT "employees_user_id_unique" UNIQUE ("auth_user_id");
+ALTER TABLE ONLY public.employee_notifications
+    ADD CONSTRAINT employee_notifications_pkey PRIMARY KEY (id);
 
 
+--
+-- Name: employees employees_email_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."notifications"
-    ADD CONSTRAINT "notifications_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "public"."profiles"
-    ADD CONSTRAINT "profiles_email_key" UNIQUE ("email");
+ALTER TABLE ONLY public.employees
+    ADD CONSTRAINT employees_email_unique UNIQUE (email);
 
 
+--
+-- Name: employees employees_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."profiles"
-    ADD CONSTRAINT "profiles_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY public.employees
+    ADD CONSTRAINT employees_pkey PRIMARY KEY (id);
 
 
+--
+-- Name: employees employees_user_id_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
 
-ALTER TABLE ONLY "public"."shift_change_requests"
-    ADD CONSTRAINT "shift_change_requests_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY public.employees
+    ADD CONSTRAINT employees_user_id_unique UNIQUE (auth_user_id);
+
+
+--
+-- Name: mail_jobs mail_jobs_job_key_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail_jobs
+    ADD CONSTRAINT mail_jobs_job_key_unique UNIQUE (job_key);
+
+
+--
+-- Name: mail_jobs mail_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mail_jobs
+    ADD CONSTRAINT mail_jobs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: profiles profiles_email_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profiles
+    ADD CONSTRAINT profiles_email_key UNIQUE (email);
+
+
+--
+-- Name: profiles profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.profiles
+    ADD CONSTRAINT profiles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: shift_change_requests shift_change_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.shift_change_requests
+    ADD CONSTRAINT shift_change_requests_pkey PRIMARY KEY (id);
 
 
 
@@ -1817,33 +2344,128 @@ ALTER TABLE ONLY "public"."time_periods"
 
 
 
-ALTER TABLE ONLY "public"."employee_notifications"
-    ADD CONSTRAINT "uniq_emp_date_update" UNIQUE ("employee_id", "type", "message");
+ALTER TABLE ONLY public.employee_notifications
+    ADD CONSTRAINT uniq_emp_date_update UNIQUE (employee_id, type, message);
 
 
+--
+-- Name: messages messages_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
 
-ALTER TABLE ONLY "storage"."buckets"
-    ADD CONSTRAINT "buckets_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "storage"."migrations"
-    ADD CONSTRAINT "migrations_name_key" UNIQUE ("name");
+ALTER TABLE ONLY realtime.messages
+    ADD CONSTRAINT messages_pkey PRIMARY KEY (id, inserted_at);
 
 
+--
+-- Name: messages_2025_09_06 messages_2025_09_06_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
 
-ALTER TABLE ONLY "storage"."migrations"
-    ADD CONSTRAINT "migrations_pkey" PRIMARY KEY ("id");
-
-
-
-ALTER TABLE ONLY "storage"."objects"
-    ADD CONSTRAINT "objects_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY realtime.messages_2025_09_06
+    ADD CONSTRAINT messages_2025_09_06_pkey PRIMARY KEY (id, inserted_at);
 
 
+--
+-- Name: messages_2025_09_07 messages_2025_09_07_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
 
-ALTER TABLE ONLY "storage"."s3_multipart_uploads_parts"
-    ADD CONSTRAINT "s3_multipart_uploads_parts_pkey" PRIMARY KEY ("id");
+ALTER TABLE ONLY realtime.messages_2025_09_07
+    ADD CONSTRAINT messages_2025_09_07_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_08 messages_2025_09_08_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_08
+    ADD CONSTRAINT messages_2025_09_08_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_09 messages_2025_09_09_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_09
+    ADD CONSTRAINT messages_2025_09_09_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_10 messages_2025_09_10_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_10
+    ADD CONSTRAINT messages_2025_09_10_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_11 messages_2025_09_11_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_11
+    ADD CONSTRAINT messages_2025_09_11_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_12 messages_2025_09_12_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_12
+    ADD CONSTRAINT messages_2025_09_12_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: subscription pk_subscription; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.subscription
+    ADD CONSTRAINT pk_subscription PRIMARY KEY (id);
+
+
+--
+-- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.schema_migrations
+    ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+
+--
+-- Name: buckets buckets_pkey; Type: CONSTRAINT; Schema: storage; Owner: -
+--
+
+ALTER TABLE ONLY storage.buckets
+    ADD CONSTRAINT buckets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: migrations migrations_name_key; Type: CONSTRAINT; Schema: storage; Owner: -
+--
+
+ALTER TABLE ONLY storage.migrations
+    ADD CONSTRAINT migrations_name_key UNIQUE (name);
+
+
+--
+-- Name: migrations migrations_pkey; Type: CONSTRAINT; Schema: storage; Owner: -
+--
+
+ALTER TABLE ONLY storage.migrations
+    ADD CONSTRAINT migrations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: objects objects_pkey; Type: CONSTRAINT; Schema: storage; Owner: -
+--
+
+ALTER TABLE ONLY storage.objects
+    ADD CONSTRAINT objects_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: s3_multipart_uploads_parts s3_multipart_uploads_parts_pkey; Type: CONSTRAINT; Schema: storage; Owner: -
+--
+
+ALTER TABLE ONLY storage.s3_multipart_uploads_parts
+    ADD CONSTRAINT s3_multipart_uploads_parts_pkey PRIMARY KEY (id);
 
 
 
@@ -2048,59 +2670,207 @@ CREATE INDEX "idx_shifts_employee_id" ON "public"."shifts" USING "btree" ("emplo
 
 
 
-CREATE INDEX "idx_shifts_published" ON "public"."shifts" USING "btree" ("published");
+CREATE INDEX idx_shifts_published ON public.shifts USING btree (published);
+
+
+--
+-- Name: idx_shifts_work_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_shifts_work_date ON public.shifts USING btree (work_date);
+
+
+--
+-- Name: mail_jobs_emp_queued_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_jobs_emp_queued_idx ON public.mail_jobs USING btree (((payload ->> 'employee_id'::text))) WHERE (status = 'queued'::text);
+
+
+--
+-- Name: mail_jobs_queued_time_type_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_jobs_queued_time_type_idx ON public.mail_jobs USING btree (created_at, type) WHERE (status = 'queued'::text);
+
+
+--
+-- Name: mail_jobs_status_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mail_jobs_status_idx ON public.mail_jobs USING btree (status) WHERE (status = 'queued'::text);
+
+
+--
+-- Name: mail_jobs_unique_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mail_jobs_unique_key ON public.mail_jobs USING btree (job_key) WHERE (type = 'admin_new_absence'::text);
+
+
+--
+-- Name: ix_realtime_subscription_entity; Type: INDEX; Schema: realtime; Owner: -
+--
+
+CREATE INDEX ix_realtime_subscription_entity ON realtime.subscription USING btree (entity);
+
+
+--
+-- Name: subscription_subscription_id_entity_filters_key; Type: INDEX; Schema: realtime; Owner: -
+--
+
+CREATE UNIQUE INDEX subscription_subscription_id_entity_filters_key ON realtime.subscription USING btree (subscription_id, entity, filters);
+
+
+--
+-- Name: bname; Type: INDEX; Schema: storage; Owner: -
+--
+
+CREATE UNIQUE INDEX bname ON storage.buckets USING btree (name);
+
+
+--
+-- Name: bucketid_objname; Type: INDEX; Schema: storage; Owner: -
+--
+
+CREATE UNIQUE INDEX bucketid_objname ON storage.objects USING btree (bucket_id, name);
+
+
+--
+-- Name: idx_multipart_uploads_list; Type: INDEX; Schema: storage; Owner: -
+--
+
+CREATE INDEX idx_multipart_uploads_list ON storage.s3_multipart_uploads USING btree (bucket_id, key, created_at);
 
 
 
-CREATE INDEX "idx_shifts_work_date" ON "public"."shifts" USING "btree" ("work_date");
+CREATE INDEX idx_objects_bucket_id_name ON storage.objects USING btree (bucket_id, name COLLATE "C");
 
 
+--
+-- Name: name_prefix_search; Type: INDEX; Schema: storage; Owner: -
+--
 
-CREATE UNIQUE INDEX "bname" ON "storage"."buckets" USING "btree" ("name");
-
-
-
-CREATE UNIQUE INDEX "bucketid_objname" ON "storage"."objects" USING "btree" ("bucket_id", "name");
-
+CREATE INDEX name_prefix_search ON storage.objects USING btree (name text_pattern_ops);
 
 
-CREATE INDEX "idx_multipart_uploads_list" ON "storage"."s3_multipart_uploads" USING "btree" ("bucket_id", "key", "created_at");
+--
+-- Name: messages_2025_09_06_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_06_pkey;
 
 
+--
+-- Name: messages_2025_09_07_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
 
-CREATE INDEX "idx_objects_bucket_id_name" ON "storage"."objects" USING "btree" ("bucket_id", "name" COLLATE "C");
-
-
-
-CREATE INDEX "name_prefix_search" ON "storage"."objects" USING "btree" ("name" "text_pattern_ops");
-
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_07_pkey;
 
 
-CREATE OR REPLACE TRIGGER "trg_employee_shift_changed" AFTER UPDATE ON "public"."shifts" FOR EACH ROW WHEN (("new"."employee_id" IS NOT NULL)) EXECUTE FUNCTION "public"."enqueue_employee_shift_changed"();
+--
+-- Name: messages_2025_09_08_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_08_pkey;
 
 
+--
+-- Name: messages_2025_09_09_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
 
-CREATE OR REPLACE TRIGGER "trg_notify_absence_insert" AFTER INSERT ON "public"."absences" FOR EACH ROW EXECUTE FUNCTION "public"."notify_absence_insert"();
-
-
-
-CREATE OR REPLACE TRIGGER "trg_notify_absence_update" AFTER UPDATE ON "public"."absences" FOR EACH ROW EXECUTE FUNCTION "public"."notify_absence_status_update"();
-
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_09_pkey;
 
 
-CREATE OR REPLACE TRIGGER "trg_notify_employee_added" AFTER INSERT ON "public"."employees" FOR EACH ROW EXECUTE FUNCTION "public"."notify_employee_added"();
+--
+-- Name: messages_2025_09_10_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_10_pkey;
 
 
+--
+-- Name: messages_2025_09_11_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
 
-CREATE OR REPLACE TRIGGER "trg_prevent_zero_minutes" BEFORE INSERT OR UPDATE ON "public"."shifts" FOR EACH ROW EXECUTE FUNCTION "public"."prevent_zero_minutes"();
-
-
-
-CREATE OR REPLACE TRIGGER "trg_shifts_updated_at" BEFORE UPDATE ON "public"."shifts" FOR EACH ROW EXECUTE FUNCTION "public"."set_updated_at"();
-
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_11_pkey;
 
 
-CREATE OR REPLACE TRIGGER "update_objects_updated_at" BEFORE UPDATE ON "storage"."objects" FOR EACH ROW EXECUTE FUNCTION "storage"."update_updated_at_column"();
+--
+-- Name: messages_2025_09_12_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_12_pkey;
+
+
+--
+-- Name: absences trg_absence_enqueue_job; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_absence_enqueue_job AFTER INSERT ON public.absences FOR EACH ROW EXECUTE FUNCTION public.trg_absence_enqueue_job();
+
+
+--
+-- Name: absences trg_admin_new_absence; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_admin_new_absence AFTER INSERT ON public.absences FOR EACH ROW EXECUTE FUNCTION public.enqueue_admin_new_absence();
+
+
+--
+-- Name: shifts trg_employee_shift_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH ROW WHEN ((new.employee_id IS NOT NULL)) EXECUTE FUNCTION public.enqueue_employee_shift_changed();
+
+
+--
+-- Name: shifts trg_employee_shift_deleted; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_employee_shift_deleted AFTER DELETE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_shift_deleted();
+
+
+--
+-- Name: absences trg_notify_absence_insert; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_absence_insert AFTER INSERT ON public.absences FOR EACH ROW EXECUTE FUNCTION public.notify_absence_insert();
+
+
+--
+-- Name: absences trg_notify_absence_update; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_absence_update AFTER UPDATE ON public.absences FOR EACH ROW EXECUTE FUNCTION public.notify_absence_status_update();
+
+
+--
+-- Name: employees trg_notify_employee_added; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_notify_employee_added AFTER INSERT ON public.employees FOR EACH ROW EXECUTE FUNCTION public.notify_employee_added();
+
+
+--
+-- Name: shifts trg_shifts_updated_at; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_shifts_updated_at BEFORE UPDATE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: subscription tr_check_filters; Type: TRIGGER; Schema: realtime; Owner: -
+--
+
+CREATE TRIGGER tr_check_filters BEFORE INSERT OR UPDATE ON realtime.subscription FOR EACH ROW EXECUTE FUNCTION realtime.subscription_check_filters();
+
+
+--
+-- Name: objects update_objects_updated_at; Type: TRIGGER; Schema: storage; Owner: -
+--
+
+CREATE TRIGGER update_objects_updated_at BEFORE UPDATE ON storage.objects FOR EACH ROW EXECUTE FUNCTION storage.update_updated_at_column();
 
 
 
@@ -2279,7 +3049,7 @@ CREATE POLICY "Employees view their own notifications" ON "public"."employee_not
 
 
 
-ALTER TABLE "public"."absences" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.absences ENABLE ROW LEVEL SECURITY;
 
 
 CREATE POLICY "admin_delete_shifts" ON "public"."shifts" FOR DELETE TO "authenticated" USING ((EXISTS ( SELECT 1
@@ -2420,20 +3190,96 @@ CREATE POLICY "admin_update_time_off" ON "public"."time_off_requests" FOR UPDATE
 
 
 
-CREATE POLICY "admin_update_time_periods" ON "public"."time_periods" FOR UPDATE TO "authenticated" USING ((EXISTS ( SELECT 1
-   FROM "public"."employees" "e"
-  WHERE (("e"."auth_user_id" = "auth"."uid"()) AND ("e"."role" = 'admin'::"text"))))) WITH CHECK ((EXISTS ( SELECT 1
-   FROM "public"."employees" "e"
-  WHERE (("e"."auth_user_id" = "auth"."uid"()) AND ("e"."role" = 'admin'::"text")))));
+CREATE POLICY admin_update_time_periods ON public.time_periods FOR UPDATE TO authenticated USING ((EXISTS ( SELECT 1
+   FROM public.employees e
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM public.employees e
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
 
 
+--
+-- Name: shifts allow anon insert shifts; Type: POLICY; Schema: public; Owner: -
+--
 
-ALTER TABLE "public"."app_settings" ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
 
 
-CREATE POLICY "employee_insert_own_absences" ON "public"."absences" FOR INSERT TO "authenticated" WITH CHECK (("employee_id" IN ( SELECT "e"."id"
-   FROM "public"."employees" "e"
-  WHERE ("e"."auth_user_id" = "auth"."uid"()))));
+--
+-- Name: shifts allow anon shifts access; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "allow anon shifts access" ON public.shifts TO anon USING (true) WITH CHECK (true);
+
+
+--
+-- Name: shifts allow anon update shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "allow anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
+
+
+--
+-- Name: shifts anon delete shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon delete shifts" ON public.shifts FOR DELETE TO anon USING (true);
+
+
+--
+-- Name: shifts anon insert shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
+
+
+--
+-- Name: shifts anon select shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon select shifts" ON public.shifts FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: shifts anon update shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
+
+
+--
+-- Name: app_settings; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: employees dev: employees select for anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "dev: employees select for anon" ON public.employees FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: notifications dev: notifications select for anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "dev: notifications select for anon" ON public.notifications FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: notifications dev_read_notifications_anon; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY dev_read_notifications_anon ON public.notifications FOR SELECT TO anon USING (true);
+
+
+--
+-- Name: absences employee_insert_own_absences; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY employee_insert_own_absences ON public.absences FOR INSERT TO authenticated WITH CHECK ((employee_id IN ( SELECT e.id
+   FROM public.employees e
+  WHERE (e.auth_user_id = auth.uid()))));
 
 
 
@@ -2541,42 +3387,25 @@ CREATE POLICY "employees_select_auth" ON "public"."employees" FOR SELECT TO "aut
 
 ALTER TABLE "public"."notifications" ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: employees employees delete; Type: POLICY; Schema: public; Owner: -
+--
 
-CREATE POLICY "notifications insert" ON "public"."notifications" FOR INSERT TO "authenticated" WITH CHECK (true);
-
-
-
-CREATE POLICY "notifications select" ON "public"."notifications" FOR SELECT TO "authenticated" USING (true);
-
+CREATE POLICY "employees delete" ON public.employees FOR DELETE TO authenticated USING (true);
 
 
-CREATE POLICY "notifications update" ON "public"."notifications" FOR UPDATE TO "authenticated" USING (true) WITH CHECK (true);
+--
+-- Name: employees employees_select_auth; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY employees_select_auth ON public.employees FOR SELECT TO authenticated USING (true);
 
 
+--
+-- Name: mail_jobs; Type: ROW SECURITY; Schema: public; Owner: -
+--
 
-CREATE POLICY "notifications_select_auth" ON "public"."notifications" FOR SELECT TO "authenticated" USING (true);
-
-
-
-CREATE POLICY "select_app_settings_all" ON "public"."app_settings" FOR SELECT TO "authenticated" USING (true);
-
-
-
-CREATE POLICY "select_time_periods_all" ON "public"."time_periods" FOR SELECT TO "authenticated" USING (true);
-
-
-
-ALTER TABLE "public"."shift_change_requests" ENABLE ROW LEVEL SECURITY;
-
-
-ALTER TABLE "public"."shifts" ENABLE ROW LEVEL SECURITY;
-
-
-CREATE POLICY "shifts_select_auth" ON "public"."shifts" FOR SELECT TO "authenticated" USING (true);
-
-
-
-ALTER TABLE "public"."time_off_requests" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mail_jobs ENABLE ROW LEVEL SECURITY;
 
 
 ALTER TABLE "public"."time_periods" ENABLE ROW LEVEL SECURITY;
@@ -2596,439 +3425,198 @@ ALTER TABLE "storage"."s3_multipart_uploads" ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE "storage"."s3_multipart_uploads_parts" ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: notifications notifications insert; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT USAGE ON SCHEMA "auth" TO "anon";
-GRANT USAGE ON SCHEMA "auth" TO "authenticated";
-GRANT USAGE ON SCHEMA "auth" TO "service_role";
-GRANT ALL ON SCHEMA "auth" TO "supabase_auth_admin";
-GRANT ALL ON SCHEMA "auth" TO "dashboard_user";
-GRANT USAGE ON SCHEMA "auth" TO "postgres";
+CREATE POLICY "notifications insert" ON public.notifications FOR INSERT TO authenticated WITH CHECK (true);
 
 
+--
+-- Name: notifications notifications select; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT USAGE ON SCHEMA "public" TO "postgres";
-GRANT USAGE ON SCHEMA "public" TO "anon";
-GRANT USAGE ON SCHEMA "public" TO "authenticated";
-GRANT USAGE ON SCHEMA "public" TO "service_role";
+CREATE POLICY "notifications select" ON public.notifications FOR SELECT TO authenticated USING (true);
 
 
+--
+-- Name: notifications notifications update; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT USAGE ON SCHEMA "storage" TO "postgres" WITH GRANT OPTION;
-GRANT USAGE ON SCHEMA "storage" TO "anon";
-GRANT USAGE ON SCHEMA "storage" TO "authenticated";
-GRANT USAGE ON SCHEMA "storage" TO "service_role";
-GRANT ALL ON SCHEMA "storage" TO "supabase_storage_admin";
-GRANT ALL ON SCHEMA "storage" TO "dashboard_user";
+CREATE POLICY "notifications update" ON public.notifications FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
 
 
+--
+-- Name: notifications notifications_select_auth; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT ALL ON FUNCTION "auth"."email"() TO "dashboard_user";
+CREATE POLICY notifications_select_auth ON public.notifications FOR SELECT TO authenticated USING (true);
 
 
+--
+-- Name: app_settings select_app_settings_all; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT ALL ON FUNCTION "auth"."jwt"() TO "postgres";
-GRANT ALL ON FUNCTION "auth"."jwt"() TO "dashboard_user";
+CREATE POLICY select_app_settings_all ON public.app_settings FOR SELECT TO authenticated USING (true);
 
 
+--
+-- Name: time_periods select_time_periods_all; Type: POLICY; Schema: public; Owner: -
+--
 
-GRANT ALL ON FUNCTION "auth"."role"() TO "dashboard_user";
+CREATE POLICY select_time_periods_all ON public.time_periods FOR SELECT TO authenticated USING (true);
 
 
+--
+-- Name: shift_change_requests; Type: ROW SECURITY; Schema: public; Owner: -
+--
 
-GRANT ALL ON FUNCTION "auth"."uid"() TO "dashboard_user";
+ALTER TABLE public.shift_change_requests ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: shifts; Type: ROW SECURITY; Schema: public; Owner: -
+--
 
+ALTER TABLE public.shifts ENABLE ROW LEVEL SECURITY;
 
-GRANT ALL ON FUNCTION "public"."current_role"() TO "anon";
-GRANT ALL ON FUNCTION "public"."current_role"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."current_role"() TO "service_role";
+--
+-- Name: shifts shifts_select_auth; Type: POLICY; Schema: public; Owner: -
+--
 
+CREATE POLICY shifts_select_auth ON public.shifts FOR SELECT TO authenticated USING (true);
 
 
-GRANT ALL ON FUNCTION "public"."delete_shifts"("_employee_id" "uuid", "_dates" "date"[]) TO "anon";
-GRANT ALL ON FUNCTION "public"."delete_shifts"("_employee_id" "uuid", "_dates" "date"[]) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."delete_shifts"("_employee_id" "uuid", "_dates" "date"[]) TO "service_role";
+--
+-- Name: time_off_requests; Type: ROW SECURITY; Schema: public; Owner: -
+--
 
+ALTER TABLE public.time_off_requests ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: time_periods; Type: ROW SECURITY; Schema: public; Owner: -
+--
 
-GRANT ALL ON FUNCTION "public"."delete_shifts_bulk"("_emp" "uuid", "_dates" "date"[]) TO "anon";
-GRANT ALL ON FUNCTION "public"."delete_shifts_bulk"("_emp" "uuid", "_dates" "date"[]) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."delete_shifts_bulk"("_emp" "uuid", "_dates" "date"[]) TO "service_role";
+ALTER TABLE public.time_periods ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: messages; Type: ROW SECURITY; Schema: realtime; Owner: -
+--
 
+ALTER TABLE realtime.messages ENABLE ROW LEVEL SECURITY;
 
-GRANT ALL ON FUNCTION "public"."enqueue_employee_new_shift"() TO "anon";
-GRANT ALL ON FUNCTION "public"."enqueue_employee_new_shift"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."enqueue_employee_new_shift"() TO "service_role";
+--
+-- Name: buckets; Type: ROW SECURITY; Schema: storage; Owner: -
+--
 
+ALTER TABLE storage.buckets ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: migrations; Type: ROW SECURITY; Schema: storage; Owner: -
+--
 
-GRANT ALL ON FUNCTION "public"."enqueue_employee_shift_changed"() TO "anon";
-GRANT ALL ON FUNCTION "public"."enqueue_employee_shift_changed"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."enqueue_employee_shift_changed"() TO "service_role";
+ALTER TABLE storage.migrations ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: objects; Type: ROW SECURITY; Schema: storage; Owner: -
+--
 
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 
-GRANT ALL ON FUNCTION "public"."enqueue_on_publish_flip"() TO "anon";
-GRANT ALL ON FUNCTION "public"."enqueue_on_publish_flip"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."enqueue_on_publish_flip"() TO "service_role";
+--
+-- Name: s3_multipart_uploads; Type: ROW SECURITY; Schema: storage; Owner: -
+--
 
+ALTER TABLE storage.s3_multipart_uploads ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: s3_multipart_uploads_parts; Type: ROW SECURITY; Schema: storage; Owner: -
+--
 
-GRANT ALL ON FUNCTION "public"."enqueue_shift_publication_jobs"() TO "anon";
-GRANT ALL ON FUNCTION "public"."enqueue_shift_publication_jobs"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."enqueue_shift_publication_jobs"() TO "service_role";
+ALTER TABLE storage.s3_multipart_uploads_parts ENABLE ROW LEVEL SECURITY;
 
+--
+-- Name: supabase_realtime; Type: PUBLICATION; Schema: -; Owner: -
+--
 
+CREATE PUBLICATION supabase_realtime WITH (publish = 'insert, update, delete, truncate');
 
-GRANT ALL ON FUNCTION "public"."notify_absence_insert"() TO "anon";
-GRANT ALL ON FUNCTION "public"."notify_absence_insert"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."notify_absence_insert"() TO "service_role";
 
+--
+-- Name: supabase_realtime_messages_publication; Type: PUBLICATION; Schema: -; Owner: -
+--
 
+CREATE PUBLICATION supabase_realtime_messages_publication WITH (publish = 'insert, update, delete, truncate');
 
-GRANT ALL ON FUNCTION "public"."notify_absence_status_update"() TO "anon";
-GRANT ALL ON FUNCTION "public"."notify_absence_status_update"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."notify_absence_status_update"() TO "service_role";
 
+--
+-- Name: supabase_realtime shifts; Type: PUBLICATION TABLE; Schema: public; Owner: -
+--
 
+ALTER PUBLICATION supabase_realtime ADD TABLE ONLY public.shifts;
 
-GRANT ALL ON FUNCTION "public"."notify_employee_added"() TO "anon";
-GRANT ALL ON FUNCTION "public"."notify_employee_added"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."notify_employee_added"() TO "service_role";
 
+--
+-- Name: supabase_realtime_messages_publication messages; Type: PUBLICATION TABLE; Schema: realtime; Owner: -
+--
 
+ALTER PUBLICATION supabase_realtime_messages_publication ADD TABLE ONLY realtime.messages;
 
-GRANT ALL ON FUNCTION "public"."prevent_zero_minutes"() TO "anon";
-GRANT ALL ON FUNCTION "public"."prevent_zero_minutes"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."prevent_zero_minutes"() TO "service_role";
 
+--
+-- Name: issue_graphql_placeholder; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER issue_graphql_placeholder ON sql_drop
+         WHEN TAG IN ('DROP EXTENSION')
+   EXECUTE FUNCTION extensions.set_graphql_placeholder();
 
-GRANT ALL ON FUNCTION "public"."publish_shifts_debug"("_start_date" "date", "_end_date" "date") TO "anon";
-GRANT ALL ON FUNCTION "public"."publish_shifts_debug"("_start_date" "date", "_end_date" "date") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."publish_shifts_debug"("_start_date" "date", "_end_date" "date") TO "service_role";
 
+--
+-- Name: issue_pg_cron_access; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER issue_pg_cron_access ON ddl_command_end
+         WHEN TAG IN ('CREATE EXTENSION')
+   EXECUTE FUNCTION extensions.grant_pg_cron_access();
 
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant"("_start_date" "date", "_end_date" "date") TO "anon";
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant"("_start_date" "date", "_end_date" "date") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant"("_start_date" "date", "_end_date" "date") TO "service_role";
 
+--
+-- Name: issue_pg_graphql_access; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER issue_pg_graphql_access ON ddl_command_end
+         WHEN TAG IN ('CREATE FUNCTION')
+   EXECUTE FUNCTION extensions.grant_pg_graphql_access();
 
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant_debug"("_start_date" "date", "_end_date" "date") TO "anon";
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant_debug"("_start_date" "date", "_end_date" "date") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."publish_shifts_instant_debug"("_start_date" "date", "_end_date" "date") TO "service_role";
 
+--
+-- Name: issue_pg_net_access; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER issue_pg_net_access ON ddl_command_end
+         WHEN TAG IN ('CREATE EXTENSION')
+   EXECUTE FUNCTION extensions.grant_pg_net_access();
 
-GRANT ALL ON FUNCTION "public"."save_shifts_bulk"("_deletes" "jsonb", "_upserts" "jsonb") TO "anon";
-GRANT ALL ON FUNCTION "public"."save_shifts_bulk"("_deletes" "jsonb", "_upserts" "jsonb") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."save_shifts_bulk"("_deletes" "jsonb", "_upserts" "jsonb") TO "service_role";
 
+--
+-- Name: pgrst_ddl_watch; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER pgrst_ddl_watch ON ddl_command_end
+   EXECUTE FUNCTION extensions.pgrst_ddl_watch();
 
-GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "anon";
-GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "authenticated";
-GRANT ALL ON FUNCTION "public"."set_updated_at"() TO "service_role";
 
+--
+-- Name: pgrst_drop_watch; Type: EVENT TRIGGER; Schema: -; Owner: -
+--
 
+CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
+   EXECUTE FUNCTION extensions.pgrst_drop_watch();
 
-GRANT ALL ON FUNCTION "public"."upsert_shifts"("_employee_id" "uuid", "_work_date" "date", "_type" "text", "_minutes" integer) TO "anon";
-GRANT ALL ON FUNCTION "public"."upsert_shifts"("_employee_id" "uuid", "_work_date" "date", "_type" "text", "_minutes" integer) TO "authenticated";
-GRANT ALL ON FUNCTION "public"."upsert_shifts"("_employee_id" "uuid", "_work_date" "date", "_type" "text", "_minutes" integer) TO "service_role";
 
+--
+-- PostgreSQL database dump complete
+--
 
+\unrestrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
 
-GRANT ALL ON FUNCTION "public"."upsert_shifts_bulk"("_rows" "jsonb") TO "anon";
-GRANT ALL ON FUNCTION "public"."upsert_shifts_bulk"("_rows" "jsonb") TO "authenticated";
-GRANT ALL ON FUNCTION "public"."upsert_shifts_bulk"("_rows" "jsonb") TO "service_role";
-
-
-
-GRANT ALL ON TABLE "auth"."audit_log_entries" TO "dashboard_user";
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."audit_log_entries" TO "postgres";
-GRANT SELECT ON TABLE "auth"."audit_log_entries" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."flow_state" TO "postgres";
-GRANT SELECT ON TABLE "auth"."flow_state" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."flow_state" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."identities" TO "postgres";
-GRANT SELECT ON TABLE "auth"."identities" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."identities" TO "dashboard_user";
-
-
-
-GRANT ALL ON TABLE "auth"."instances" TO "dashboard_user";
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."instances" TO "postgres";
-GRANT SELECT ON TABLE "auth"."instances" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."mfa_amr_claims" TO "postgres";
-GRANT SELECT ON TABLE "auth"."mfa_amr_claims" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."mfa_amr_claims" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."mfa_challenges" TO "postgres";
-GRANT SELECT ON TABLE "auth"."mfa_challenges" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."mfa_challenges" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."mfa_factors" TO "postgres";
-GRANT SELECT ON TABLE "auth"."mfa_factors" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."mfa_factors" TO "dashboard_user";
-
-
-
-GRANT ALL ON TABLE "auth"."oauth_clients" TO "postgres";
-GRANT ALL ON TABLE "auth"."oauth_clients" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."one_time_tokens" TO "postgres";
-GRANT SELECT ON TABLE "auth"."one_time_tokens" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."one_time_tokens" TO "dashboard_user";
-
-
-
-GRANT ALL ON TABLE "auth"."refresh_tokens" TO "dashboard_user";
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."refresh_tokens" TO "postgres";
-GRANT SELECT ON TABLE "auth"."refresh_tokens" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT ALL ON SEQUENCE "auth"."refresh_tokens_id_seq" TO "dashboard_user";
-GRANT ALL ON SEQUENCE "auth"."refresh_tokens_id_seq" TO "postgres";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."saml_providers" TO "postgres";
-GRANT SELECT ON TABLE "auth"."saml_providers" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."saml_providers" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."saml_relay_states" TO "postgres";
-GRANT SELECT ON TABLE "auth"."saml_relay_states" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."saml_relay_states" TO "dashboard_user";
-
-
-
-GRANT SELECT ON TABLE "auth"."schema_migrations" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."sessions" TO "postgres";
-GRANT SELECT ON TABLE "auth"."sessions" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."sessions" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."sso_domains" TO "postgres";
-GRANT SELECT ON TABLE "auth"."sso_domains" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."sso_domains" TO "dashboard_user";
-
-
-
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."sso_providers" TO "postgres";
-GRANT SELECT ON TABLE "auth"."sso_providers" TO "postgres" WITH GRANT OPTION;
-GRANT ALL ON TABLE "auth"."sso_providers" TO "dashboard_user";
-
-
-
-GRANT ALL ON TABLE "auth"."users" TO "dashboard_user";
-GRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,MAINTAIN,UPDATE ON TABLE "auth"."users" TO "postgres";
-GRANT SELECT ON TABLE "auth"."users" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT ALL ON TABLE "public"."absences" TO "authenticated";
-GRANT ALL ON TABLE "public"."absences" TO "service_role";
-GRANT SELECT ON TABLE "public"."absences" TO "anon";
-
-
-
-GRANT ALL ON TABLE "public"."app_settings" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."debug_log" TO "anon";
-GRANT ALL ON TABLE "public"."debug_log" TO "authenticated";
-GRANT ALL ON TABLE "public"."debug_log" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."debug_log_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."debug_log_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."debug_log_id_seq" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."email_send_log" TO "anon";
-GRANT ALL ON TABLE "public"."email_send_log" TO "authenticated";
-GRANT ALL ON TABLE "public"."email_send_log" TO "service_role";
-
-
-
-GRANT ALL ON SEQUENCE "public"."email_send_log_id_seq" TO "anon";
-GRANT ALL ON SEQUENCE "public"."email_send_log_id_seq" TO "authenticated";
-GRANT ALL ON SEQUENCE "public"."email_send_log_id_seq" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."employee_notifications" TO "anon";
-GRANT ALL ON TABLE "public"."employee_notifications" TO "authenticated";
-GRANT ALL ON TABLE "public"."employee_notifications" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."employees" TO "authenticated";
-GRANT ALL ON TABLE "public"."employees" TO "service_role";
-GRANT SELECT ON TABLE "public"."employees" TO "anon";
-
-
-
-GRANT ALL ON TABLE "public"."notifications" TO "authenticated";
-GRANT ALL ON TABLE "public"."notifications" TO "service_role";
-GRANT SELECT ON TABLE "public"."notifications" TO "anon";
-
-
-
-GRANT ALL ON TABLE "public"."profiles" TO "anon";
-GRANT ALL ON TABLE "public"."profiles" TO "authenticated";
-GRANT ALL ON TABLE "public"."profiles" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."shift_change_requests" TO "anon";
-GRANT ALL ON TABLE "public"."shift_change_requests" TO "authenticated";
-GRANT ALL ON TABLE "public"."shift_change_requests" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."shift_publications" TO "anon";
-GRANT ALL ON TABLE "public"."shift_publications" TO "authenticated";
-GRANT ALL ON TABLE "public"."shift_publications" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."shifts" TO "authenticated";
-GRANT ALL ON TABLE "public"."shifts" TO "service_role";
-GRANT SELECT ON TABLE "public"."shifts" TO "anon";
-
-
-
-GRANT ALL ON TABLE "public"."time_off_requests" TO "anon";
-GRANT ALL ON TABLE "public"."time_off_requests" TO "authenticated";
-GRANT ALL ON TABLE "public"."time_off_requests" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "public"."time_periods" TO "anon";
-GRANT ALL ON TABLE "public"."time_periods" TO "authenticated";
-GRANT ALL ON TABLE "public"."time_periods" TO "service_role";
-
-
-
-GRANT ALL ON TABLE "storage"."buckets" TO "anon";
-GRANT ALL ON TABLE "storage"."buckets" TO "authenticated";
-GRANT ALL ON TABLE "storage"."buckets" TO "service_role";
-GRANT ALL ON TABLE "storage"."buckets" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT ALL ON TABLE "storage"."objects" TO "anon";
-GRANT ALL ON TABLE "storage"."objects" TO "authenticated";
-GRANT ALL ON TABLE "storage"."objects" TO "service_role";
-GRANT ALL ON TABLE "storage"."objects" TO "postgres" WITH GRANT OPTION;
-
-
-
-GRANT ALL ON TABLE "storage"."s3_multipart_uploads" TO "service_role";
-GRANT SELECT ON TABLE "storage"."s3_multipart_uploads" TO "authenticated";
-GRANT SELECT ON TABLE "storage"."s3_multipart_uploads" TO "anon";
-
-
-
-GRANT ALL ON TABLE "storage"."s3_multipart_uploads_parts" TO "service_role";
-GRANT SELECT ON TABLE "storage"."s3_multipart_uploads_parts" TO "authenticated";
-GRANT SELECT ON TABLE "storage"."s3_multipart_uploads_parts" TO "anon";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON SEQUENCES TO "dashboard_user";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON FUNCTIONS TO "dashboard_user";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "supabase_auth_admin" IN SCHEMA "auth" GRANT ALL ON TABLES TO "dashboard_user";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES TO "service_role";
-
-
-
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS TO "service_role";
-
-
-
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES TO "service_role";
-
-
-
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON SEQUENCES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON SEQUENCES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON SEQUENCES TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON SEQUENCES TO "service_role";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON FUNCTIONS TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON FUNCTIONS TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON FUNCTIONS TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON FUNCTIONS TO "service_role";
-
-
-
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON TABLES TO "postgres";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON TABLES TO "anon";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON TABLES TO "authenticated";
-ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "storage" GRANT ALL ON TABLES TO "service_role";
-
-
-
-RESET ALL;
