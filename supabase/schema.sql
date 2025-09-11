@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
+\restrict HJSJivHM4bNLcHC2jYShuhOsjCjOEAUmKvMFpyKlcTadR2yvbLoOB7meqGMVcJZ
 
 -- Dumped from database version 17.4
 -- Dumped by pg_dump version 17.6 (Ubuntu 17.6-1.pgdg24.04+1)
@@ -408,92 +408,6 @@ end;
 $_$;
 
 
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
---
--- Name: mail_jobs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.mail_jobs (
-    id bigint NOT NULL,
-    type text NOT NULL,
-    payload jsonb NOT NULL,
-    status text DEFAULT 'queued'::text NOT NULL,
-    attempt_count integer DEFAULT 0 NOT NULL,
-    last_error text,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    processed_at timestamp with time zone,
-    job_key text GENERATED ALWAYS AS (
-CASE
-    WHEN (type = 'admin_new_absence'::text) THEN (((((payload ->> 'employee_id'::text) || '|'::text) || (payload ->> 'start_date'::text)) || '|'::text) || COALESCE((payload ->> 'end_date'::text), ''::text))
-    ELSE NULL::text
-END) STORED
-);
-
-
---
--- Name: claim_employee_jobs(text, timestamp with time zone, text[], integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.claim_employee_jobs(p_employee_id text, p_since timestamp with time zone, p_types text[], p_limit integer DEFAULT 200) RETURNS SETOF public.mail_jobs
-    LANGUAGE sql SECURITY DEFINER
-    SET search_path TO 'public'
-    AS $$
-  with candidate as (
-    select id
-    from public.mail_jobs
-    where status = 'queued'
-      and created_at >= p_since
-      and type = any(p_types)
-      and payload->>'employee_id' = p_employee_id
-    order by created_at asc
-    limit p_limit
-  ),
-  locked as (
-    update public.mail_jobs m
-      set status = 'processing',
-          processed_at = now(),
-          attempt_count = m.attempt_count + 1
-    where m.id in (select id from candidate)
-      and m.status = 'queued'
-    returning m.*
-  )
-  select * from locked;
-$$;
-
-
---
--- Name: claim_employee_jobs(uuid, timestamp with time zone, text[], integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.claim_employee_jobs(p_employee_id uuid, p_since timestamp with time zone, p_types text[], p_limit integer DEFAULT 200) RETURNS SETOF public.mail_jobs
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'public'
-    AS $$
-begin
-  return query
-  with cte as (
-    select id
-    from mail_jobs
-    where status = 'queued'
-      and (payload->>'employee_id') = p_employee_id::text
-      and type = any(p_types)
-      and created_at >= p_since
-    order by created_at asc
-    limit p_limit
-    for update skip locked
-  )
-  update mail_jobs m
-  set status = 'processing'
-  from cte
-  where m.id = cte.id
-  returning m.*;
-end;
-$$;
-
-
 --
 -- Name: current_role(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -521,58 +435,15 @@ $$;
 
 
 --
--- Name: enqueue_admin_new_absence(); Type: FUNCTION; Schema: public; Owner: -
+-- Name: delete_shifts_bulk(uuid, date[]); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.enqueue_admin_new_absence() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER
+CREATE FUNCTION public.delete_shifts_bulk(_emp uuid, _dates date[]) RETURNS void
+    LANGUAGE sql
     AS $$
-DECLARE
-  cfg RECORD;
-  _end_date date;
-BEGIN
-  SELECT email_notifications, absence_requests, admin_notification_emails
-    INTO cfg
-  FROM public.app_settings
-  WHERE id = 1;
-
-  IF COALESCE(cfg.email_notifications,false) IS NOT TRUE THEN RETURN NEW; END IF;
-  IF COALESCE(cfg.absence_requests,false)     IS NOT TRUE THEN RETURN NEW; END IF;
-  IF cfg.admin_notification_emails IS NULL
-     OR array_length(cfg.admin_notification_emails,1) < 1 THEN
-    RETURN NEW;
-  END IF;
-
-  -- normalisoi: jos end_date puuttuu → start_date
-  _end_date := COALESCE(NEW.end_date, NEW.start_date);
-
-  INSERT INTO public.mail_jobs (type, status, attempt_count, payload)
-  VALUES (
-    'admin_new_absence',
-    'queued',
-    0,
-    jsonb_build_object(
-      'employee_id', NEW.employee_id,
-      'start_date', NEW.start_date,
-      'end_date',   _end_date,
-      'reason',     NEW.reason
-    )
-  )
-  ON CONFLICT (job_key) DO NOTHING;  -- nyt toimii, koska on UNIQUE CONSTRAINT
-
-  -- älä kaada inserttiä vaikka HTTP failaa
-  BEGIN
-    PERFORM net.http_post(
-      url     := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/mailer',
-      headers := jsonb_build_object('Authorization','Bearer '||'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11c3JtcGJsc2F6eGNyaHd0aHRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4NjI3NzIsImV4cCI6MjA3MTQzODc3Mn0.k6zU1Eiif-06XVvlHMugfxsL-ZFnXiTuf5Qg28r5x8A'),
-      body    := '{}'::jsonb
-    );
-  EXCEPTION WHEN OTHERS THEN
-    NULL;
-  END;
-
-  RETURN NEW;
-END;
+  DELETE FROM public.shifts
+  WHERE employee_id = _emp
+    AND work_date = ANY(_dates);
 $$;
 
 
@@ -622,41 +493,6 @@ begin
 
   return new;
 end;
-$$;
-
-
---
--- Name: enqueue_employee_shift_deleted(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.enqueue_employee_shift_deleted() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  IF OLD.published IS TRUE THEN
-    -- sähköposti
-    INSERT INTO public.mail_jobs(type, payload)
-    VALUES ('employee_shift_deleted', jsonb_build_object(
-      'employee_id', OLD.employee_id,
-      'work_date',   OLD.work_date::text,
-      'start',       OLD.start_time::text,
-      'end',         OLD.end_time::text
-    ));
-
-    -- notifikaatio
-    INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-    VALUES (
-      OLD.employee_id,
-      'shift_declined',
-      'Vuorosi on peruttu',
-      'Päivämäärä: ' || OLD.work_date::text,
-      now(),
-      FALSE,
-      'medium'
-    );
-  END IF;
-  RETURN OLD;
-END;
 $$;
 
 
@@ -757,31 +593,265 @@ end $$;
 
 
 --
--- Name: publish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
+-- Name: prevent_zero_minutes(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.publish_shifts(_start_date date, _end_date date) RETURNS void
+CREATE FUNCTION public.prevent_zero_minutes() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  UPDATE public.shifts
-  SET published = true, published_at = now()
-  WHERE work_date BETWEEN _start_date AND _end_date
-    AND published = false;
+  IF NEW.minutes IS NULL OR NEW.minutes <= 0 THEN
+    RAISE EXCEPTION 'Minutes must be > 0, got %', NEW.minutes;
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
-  INSERT INTO public.shift_publications (start_date, end_date, status)
-  VALUES (_start_date, _end_date, 'pending');
 
-  INSERT INTO public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
-  SELECT DISTINCT s.employee_id,
+--
+-- Name: publish_shifts_debug(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.publish_shifts_debug(_start_date date, _end_date date) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare
+  ts timestamp := now();
+  pub_id uuid;
+  emails text[];
+  result jsonb;
+begin
+  -- Merkitse vuorot julkaistuiksi
+  update public.shifts
+  set published = true, published_at = ts
+  where work_date between _start_date and _end_date
+    and published = false;
+
+  -- Luo julkaisun merkintä
+  insert into public.shift_publications (start_date, end_date, status, published_at)
+  values (_start_date, _end_date, 'sent', ts)
+  returning id into pub_id;
+
+  -- Luo in-app ilmoitukset
+  insert into public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+  select distinct s.employee_id,
          'schedule_published',
          'Uusi aikataulu julkaistu',
-         'Tarkista uudet työvuorosi.',
-         now(), false, 'high'
-  FROM public.shifts s
-  WHERE s.work_date BETWEEN _start_date AND _end_date
-    AND s.published = true
-    AND s.published_at >= now() - interval '1 minute';
+         'Tarkista uudet työvuorosi. Julkaisu: ' || pub_id,
+         ts, false, 'high'
+  from public.shifts s
+  where s.work_date between _start_date and _end_date
+    and s.published = true
+  group by s.employee_id;
+
+  -- Kerää emailit
+  select array_agg(distinct e.email)
+  into emails
+  from public.shifts s
+  join public.employees e on e.id = s.employee_id
+  where s.work_date between _start_date and _end_date
+    and s.published = true
+    and e.email is not null;
+
+  -- Lähetä emailit yhdellä POSTilla
+  if emails is not null and array_length(emails,1) > 0 then
+    select net.http_post(
+      url := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/sendemail',
+      headers := jsonb_build_object(
+        'Authorization','Bearer ' || 'TÄHÄN_SERVICE_ROLE_KEY',
+        'Content-Type','application/json'
+      ),
+      body := jsonb_build_object(
+        'to', to_jsonb(emails),
+        'subject','Uudet vuorot julkaistu',
+        'text','Sinulle on julkaistu uusia vuoroja. Tarkista työvuorosi sovelluksesta.'
+      )
+    ) into result;
+
+    return jsonb_build_object('emails', emails, 'http_post', result);
+  else
+    return jsonb_build_object('emails','[]','error','no emails found');
+  end if;
+end;
+$$;
+
+
+--
+-- Name: publish_shifts_instant(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.publish_shifts_instant(_start_date date, _end_date date) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare
+  ts timestamp := now();
+  pub_id uuid;
+  emails text[];
+begin
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'start ' || _start_date || ' - ' || _end_date);
+
+  -- Merkitse vuorot julkaistuiksi
+  update public.shifts
+  set published = true, published_at = ts
+  where work_date between _start_date and _end_date
+    and published = false;
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'shifts updated: ' || found);
+
+  -- Luo julkaisun merkintä
+  insert into public.shift_publications (start_date, end_date, status, published_at)
+  values (_start_date, _end_date, 'sent', ts)
+  returning id into pub_id;
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'publication id: ' || pub_id);
+
+  -- Luo in-app ilmoitukset
+  insert into public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+  select distinct s.employee_id,
+         'schedule_published',
+         'Uusi aikataulu julkaistu',
+         'Tarkista uudet työvuorosi. Julkaisu: ' || pub_id,
+         ts, false, 'high'
+  from public.shifts s
+  where s.work_date between _start_date and _end_date
+    and s.published = true;
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'notifications inserted: ' || found);
+
+  -- Kerää emailit
+  select array_agg(distinct e.email)
+  into emails
+  from public.shifts s
+  join public.employees e on e.id = s.employee_id
+  where s.work_date between _start_date and _end_date
+    and s.published = true
+    and e.email is not null;
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'emails collected: ' || coalesce(array_length(emails,1),0));
+
+  -- Lähetä kaikki kerralla arrayna
+  if emails is not null and array_length(emails,1) > 0 then
+    perform net.http_post(
+      url := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/sendemail',
+      headers := jsonb_build_object(
+        'Authorization','Bearer ' || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11c3JtcGJsc2F6eGNyaHd0aHRjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTg2Mjc3MiwiZXhwIjoyMDcxNDM4NzcyfQ.IsmXis0LAg4lUTD9nSB1i9212C9f1JSet0bKYKW1s1w',
+        'Content-Type','application/json'
+      ),
+      body := jsonb_build_object(
+        'to', (select jsonb_agg(e) from unnest(emails) e),
+        'subject','Uudet vuorot julkaistu',
+        'text','Sinulle on julkaistu uusia vuoroja. Tarkista työvuorosi sovelluksesta.'
+      )
+    );
+    insert into debug_log (context, message)
+    values ('publish_shifts_instant', 'http_post executed, recipients: ' || array_to_string(emails, ', '));
+  else
+    insert into debug_log (context, message)
+    values ('publish_shifts_instant', 'no emails to send');
+  end if;
+
+  insert into debug_log (context, message)
+  values ('publish_shifts_instant', 'end');
+end;
+$$;
+
+
+--
+-- Name: publish_shifts_instant_debug(date, date); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.publish_shifts_instant_debug(_start_date date, _end_date date) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER
+    AS $$
+declare
+  ts timestamp := now();
+  pub_id uuid;
+  emails text[];
+  sent_count int := 0;
+begin
+  -- Merkitse vuorot julkaistuiksi
+  update public.shifts
+  set published = true, published_at = ts
+  where work_date between _start_date and _end_date
+    and published = false;
+
+  -- Luo julkaisun merkintä
+  insert into public.shift_publications (start_date, end_date, status, published_at)
+  values (_start_date, _end_date, 'sent', ts)
+  returning id into pub_id;
+
+  -- Luo in-app ilmoitukset
+  insert into public.employee_notifications (employee_id, type, title, message, created_at, is_read, priority)
+  select distinct s.employee_id,
+         'schedule_published',
+         'Uusi aikataulu julkaistu',
+         'Tarkista uudet työvuorosi. Julkaisu: ' || pub_id,
+         ts, false, 'high'
+  from public.shifts s
+  where s.work_date between _start_date and _end_date
+    and s.published = true
+  group by s.employee_id;
+
+  -- Kerää emailit
+  select array_agg(distinct e.email)
+  into emails
+  from public.shifts s
+  join public.employees e on e.id = s.employee_id
+  where s.work_date between _start_date and _end_date
+    and s.published = true
+    and e.email is not null;
+
+  -- Lähetä sähköpostit yksi kerrallaan
+  if emails is not null and array_length(emails,1) > 0 then
+    for i in 1 .. array_length(emails,1) loop
+      perform net.http_post(
+        url := 'https://musrmpblsazxcrhwthtc.functions.supabase.co/sendemail',
+        headers := jsonb_build_object(
+          'Authorization','Bearer ' || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im11c3JtcGJsc2F6eGNyaHd0aHRjIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NTg2Mjc3MiwiZXhwIjoyMDcxNDM4NzcyfQ.IsmXis0LAg4lUTD9nSB1i9212C9f1JSet0bKYKW1s1w',
+          'Content-Type','application/json'
+        ),
+        body := jsonb_build_object(
+          'to', emails[i],
+          'subject','Uudet vuorot julkaistu',
+          'text','Sinulle on julkaistu uusia vuoroja. Tarkista työvuorosi sovelluksesta.'
+        )
+      );
+      sent_count := sent_count + 1;
+    end loop;
+
+    return jsonb_build_object('emails', emails, 'sent_count', sent_count);
+  else
+    return jsonb_build_object('emails','[]','sent_count',0,'error','no emails found');
+  end if;
+end;
+$$;
+
+
+--
+-- Name: save_shifts_bulk(jsonb, jsonb); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.save_shifts_bulk(_deletes jsonb, _upserts jsonb) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- 1) Poistot
+  DELETE FROM public.shifts s
+  USING jsonb_to_recordset(_deletes) AS d(employee_id uuid, work_date date)
+  WHERE s.employee_id = d.employee_id
+    AND s.work_date = d.work_date;
+
+  -- 2) Upsertit
+  INSERT INTO public.shifts (employee_id, work_date, type, minutes)
+  SELECT employee_id, work_date, type, minutes
+  FROM jsonb_to_recordset(_upserts)
+       AS u(employee_id uuid, work_date date, type text, minutes int)
+  ON CONFLICT (employee_id, work_date)
+  DO UPDATE
+    SET type = EXCLUDED.type,
+        minutes = EXCLUDED.minutes,
+        updated_at = now();
 END;
 $$;
 
@@ -797,50 +867,6 @@ begin
   new.updated_at = now();
   return new;
 end; $$;
-
-
---
--- Name: trg_absence_enqueue_job(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.trg_absence_enqueue_job() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-begin
-  insert into mail_jobs (type, payload)
-  values (
-    'admin_new_absence',
-    jsonb_build_object(
-      'absence_id', new.id,
-      'employee_id', new.employee_id,
-      'start_date', new.start_date,
-      'end_date', new.end_date,
-      'reason', new.reason
-    )
-  );
-  return new;
-end;
-$$;
-
-
---
--- Name: unpublish_shifts(date, date); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.unpublish_shifts(_start_date date, _end_date date) RETURNS void
-    LANGUAGE plpgsql SECURITY DEFINER
-    AS $$
-begin
-  update public.shifts
-  set published = false
-  where work_date between _start_date and _end_date;
-
-  update public.shift_publications
-  set status = 'canceled'
-  where start_date = _start_date
-    and end_date = _end_date;
-end;
-$$;
 
 
 --
@@ -868,17 +894,18 @@ $$;
 CREATE FUNCTION public.upsert_shifts_bulk(_rows jsonb) RETURNS void
     LANGUAGE plpgsql
     AS $$
-begin
-  insert into shifts (employee_id, work_date, type, minutes)
-  select (r->>'employee_id')::uuid,
-         (r->>'work_date')::date,
-         r->>'type',
-         (r->>'minutes')::int
-  from jsonb_array_elements(_rows) as r
-  on conflict (employee_id, work_date)
-  do update set type = excluded.type,
-                minutes = excluded.minutes;
-end;
+BEGIN
+  INSERT INTO public.shifts (employee_id, work_date, type, minutes)
+  SELECT employee_id, work_date, type, minutes
+  FROM jsonb_to_recordset(_rows)
+       AS x(employee_id uuid, work_date date, type text, minutes integer)
+  WHERE minutes IS NOT NULL AND minutes > 0
+  ON CONFLICT (employee_id, work_date)
+  DO UPDATE
+    SET type = EXCLUDED.type,
+        minutes = EXCLUDED.minutes,
+        updated_at = now();
+END;
 $$;
 
 
@@ -1832,6 +1859,10 @@ END;
 $$;
 
 
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
 --
 -- Name: audit_log_entries; Type: TABLE; Schema: auth; Owner: -
 --
@@ -2325,6 +2356,68 @@ CREATE TABLE public.app_settings (
 
 
 --
+-- Name: debug_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.debug_log (
+    id bigint NOT NULL,
+    context text,
+    message text,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: debug_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.debug_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: debug_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.debug_log_id_seq OWNED BY public.debug_log.id;
+
+
+--
+-- Name: email_send_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_send_log (
+    id bigint NOT NULL,
+    pub_id uuid NOT NULL,
+    email text NOT NULL,
+    sent_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: email_send_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.email_send_log_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: email_send_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.email_send_log_id_seq OWNED BY public.email_send_log.id;
+
+
+--
 -- Name: employee_notifications; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2358,58 +2451,6 @@ CREATE TABLE public.employees (
 
 
 --
--- Name: shift_publications; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.shift_publications (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
-    start_date date NOT NULL,
-    end_date date NOT NULL,
-    published_at timestamp with time zone DEFAULT now() NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL
-);
-
-
---
--- Name: TABLE shift_publications; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.shift_publications IS 'Tallentaa vuorojen julkaisun ja sen tilan (pending/sent/canceled).';
-
-
---
--- Name: latest_publications_overview; Type: VIEW; Schema: public; Owner: -
---
-
-CREATE VIEW public.latest_publications_overview AS
- SELECT sp.id AS publication_id,
-    sp.start_date,
-    sp.end_date,
-    sp.status AS publication_status,
-    count(j.*) FILTER (WHERE (j.status = 'queued'::text)) AS jobs_queued,
-    count(j.*) FILTER (WHERE (j.status = 'processing'::text)) AS jobs_processing,
-    count(j.*) FILTER (WHERE (j.status = 'sent'::text)) AS jobs_sent
-   FROM (public.shift_publications sp
-     LEFT JOIN public.mail_jobs j ON ((((((j.payload ->> 'work_date'::text))::date >= sp.start_date) AND (((j.payload ->> 'work_date'::text))::date <= sp.end_date)) AND (j.type = 'shift_publication'::text))))
-  GROUP BY sp.id, sp.start_date, sp.end_date, sp.status
-  ORDER BY sp.start_date DESC;
-
-
---
--- Name: mail_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.mail_jobs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.mail_jobs_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
 -- Name: notifications; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2437,26 +2478,6 @@ CREATE TABLE public.profiles (
 
 
 --
--- Name: publication_jobs_debug; Type: VIEW; Schema: public; Owner: -
---
-
-CREATE VIEW public.publication_jobs_debug AS
- SELECT sp.id AS publication_id,
-    sp.start_date,
-    sp.end_date,
-    sp.status AS publication_status,
-    j.id AS job_id,
-    j.status AS job_status,
-    j.created_at AS job_created,
-    j.processed_at AS job_processed,
-    (j.payload ->> 'employee_id'::text) AS employee_id,
-    (j.payload ->> 'work_date'::text) AS work_date
-   FROM (public.shift_publications sp
-     LEFT JOIN public.mail_jobs j ON ((((((j.payload ->> 'work_date'::text))::date >= sp.start_date) AND (((j.payload ->> 'work_date'::text))::date <= sp.end_date)) AND (j.type = 'shift_publication'::text))))
-  ORDER BY sp.start_date DESC, j.created_at DESC;
-
-
---
 -- Name: shift_change_requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2471,6 +2492,26 @@ CREATE TABLE public.shift_change_requests (
     status text DEFAULT 'pending'::text NOT NULL,
     submitted_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: shift_publications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.shift_publications (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    published_at timestamp with time zone DEFAULT now() NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL
+);
+
+
+--
+-- Name: TABLE shift_publications; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.shift_publications IS 'Tallentaa vuorojen julkaisun ja sen tilan (pending/sent/canceled).';
 
 
 --
@@ -2490,7 +2531,8 @@ CREATE TABLE public.shifts (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     published boolean DEFAULT false NOT NULL,
     published_at timestamp with time zone,
-    minutes integer DEFAULT 0 NOT NULL,
+    minutes integer NOT NULL,
+    CONSTRAINT minutes_positive CHECK ((minutes > 0)),
     CONSTRAINT shifts_time_order_chk CHECK (((start_time IS NULL) OR (end_time IS NULL) OR (start_time < end_time))),
     CONSTRAINT shifts_type_allowed_chk CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text]))),
     CONSTRAINT shifts_type_check CHECK ((type = ANY (ARRAY['normal'::text, 'locked'::text, 'absent'::text, 'holiday'::text])))
@@ -2541,22 +2583,6 @@ CREATE TABLE realtime.messages (
     id uuid DEFAULT gen_random_uuid() NOT NULL
 )
 PARTITION BY RANGE (inserted_at);
-
-
---
--- Name: messages_2025_09_06; Type: TABLE; Schema: realtime; Owner: -
---
-
-CREATE TABLE realtime.messages_2025_09_06 (
-    topic text NOT NULL,
-    extension text NOT NULL,
-    payload jsonb,
-    event text,
-    private boolean DEFAULT false,
-    updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
-    id uuid DEFAULT gen_random_uuid() NOT NULL
-);
 
 
 --
@@ -2644,6 +2670,22 @@ CREATE TABLE realtime.messages_2025_09_11 (
 --
 
 CREATE TABLE realtime.messages_2025_09_12 (
+    topic text NOT NULL,
+    extension text NOT NULL,
+    payload jsonb,
+    event text,
+    private boolean DEFAULT false,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    inserted_at timestamp without time zone DEFAULT now() NOT NULL,
+    id uuid DEFAULT gen_random_uuid() NOT NULL
+);
+
+
+--
+-- Name: messages_2025_09_13; Type: TABLE; Schema: realtime; Owner: -
+--
+
+CREATE TABLE realtime.messages_2025_09_13 (
     topic text NOT NULL,
     extension text NOT NULL,
     payload jsonb,
@@ -2815,13 +2857,6 @@ CREATE TABLE supabase_migrations.seed_files (
 
 
 --
--- Name: messages_2025_09_06; Type: TABLE ATTACH; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_06 FOR VALUES FROM ('2025-09-06 00:00:00') TO ('2025-09-07 00:00:00');
-
-
---
 -- Name: messages_2025_09_07; Type: TABLE ATTACH; Schema: realtime; Owner: -
 --
 
@@ -2864,10 +2899,31 @@ ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_12
 
 
 --
+-- Name: messages_2025_09_13; Type: TABLE ATTACH; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages ATTACH PARTITION realtime.messages_2025_09_13 FOR VALUES FROM ('2025-09-13 00:00:00') TO ('2025-09-14 00:00:00');
+
+
+--
 -- Name: refresh_tokens id; Type: DEFAULT; Schema: auth; Owner: -
 --
 
 ALTER TABLE ONLY auth.refresh_tokens ALTER COLUMN id SET DEFAULT nextval('auth.refresh_tokens_id_seq'::regclass);
+
+
+--
+-- Name: debug_log id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.debug_log ALTER COLUMN id SET DEFAULT nextval('public.debug_log_id_seq'::regclass);
+
+
+--
+-- Name: email_send_log id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_send_log ALTER COLUMN id SET DEFAULT nextval('public.email_send_log_id_seq'::regclass);
 
 
 --
@@ -3079,6 +3135,22 @@ ALTER TABLE ONLY public.app_settings
 
 
 --
+-- Name: debug_log debug_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.debug_log
+    ADD CONSTRAINT debug_log_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_send_log email_send_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_send_log
+    ADD CONSTRAINT email_send_log_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: employee_notifications employee_notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3108,22 +3180,6 @@ ALTER TABLE ONLY public.employees
 
 ALTER TABLE ONLY public.employees
     ADD CONSTRAINT employees_user_id_unique UNIQUE (auth_user_id);
-
-
---
--- Name: mail_jobs mail_jobs_job_key_unique; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.mail_jobs
-    ADD CONSTRAINT mail_jobs_job_key_unique UNIQUE (job_key);
-
-
---
--- Name: mail_jobs mail_jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.mail_jobs
-    ADD CONSTRAINT mail_jobs_pkey PRIMARY KEY (id);
 
 
 --
@@ -3215,14 +3271,6 @@ ALTER TABLE ONLY realtime.messages
 
 
 --
--- Name: messages_2025_09_06 messages_2025_09_06_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
---
-
-ALTER TABLE ONLY realtime.messages_2025_09_06
-    ADD CONSTRAINT messages_2025_09_06_pkey PRIMARY KEY (id, inserted_at);
-
-
---
 -- Name: messages_2025_09_07 messages_2025_09_07_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
 --
 
@@ -3268,6 +3316,14 @@ ALTER TABLE ONLY realtime.messages_2025_09_11
 
 ALTER TABLE ONLY realtime.messages_2025_09_12
     ADD CONSTRAINT messages_2025_09_12_pkey PRIMARY KEY (id, inserted_at);
+
+
+--
+-- Name: messages_2025_09_13 messages_2025_09_13_pkey; Type: CONSTRAINT; Schema: realtime; Owner: -
+--
+
+ALTER TABLE ONLY realtime.messages_2025_09_13
+    ADD CONSTRAINT messages_2025_09_13_pkey PRIMARY KEY (id, inserted_at);
 
 
 --
@@ -3708,34 +3764,6 @@ CREATE INDEX idx_shifts_work_date ON public.shifts USING btree (work_date);
 
 
 --
--- Name: mail_jobs_emp_queued_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX mail_jobs_emp_queued_idx ON public.mail_jobs USING btree (((payload ->> 'employee_id'::text))) WHERE (status = 'queued'::text);
-
-
---
--- Name: mail_jobs_queued_time_type_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX mail_jobs_queued_time_type_idx ON public.mail_jobs USING btree (created_at, type) WHERE (status = 'queued'::text);
-
-
---
--- Name: mail_jobs_status_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX mail_jobs_status_idx ON public.mail_jobs USING btree (status) WHERE (status = 'queued'::text);
-
-
---
--- Name: mail_jobs_unique_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX mail_jobs_unique_key ON public.mail_jobs USING btree (job_key) WHERE (type = 'admin_new_absence'::text);
-
-
---
 -- Name: ix_realtime_subscription_entity; Type: INDEX; Schema: realtime; Owner: -
 --
 
@@ -3785,13 +3813,6 @@ CREATE INDEX name_prefix_search ON storage.objects USING btree (name text_patter
 
 
 --
--- Name: messages_2025_09_06_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
---
-
-ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_06_pkey;
-
-
---
 -- Name: messages_2025_09_07_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
 --
 
@@ -3834,17 +3855,10 @@ ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_12
 
 
 --
--- Name: absences trg_absence_enqueue_job; Type: TRIGGER; Schema: public; Owner: -
+-- Name: messages_2025_09_13_pkey; Type: INDEX ATTACH; Schema: realtime; Owner: -
 --
 
-CREATE TRIGGER trg_absence_enqueue_job AFTER INSERT ON public.absences FOR EACH ROW EXECUTE FUNCTION public.trg_absence_enqueue_job();
-
-
---
--- Name: absences trg_admin_new_absence; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_admin_new_absence AFTER INSERT ON public.absences FOR EACH ROW EXECUTE FUNCTION public.enqueue_admin_new_absence();
+ALTER INDEX realtime.messages_pkey ATTACH PARTITION realtime.messages_2025_09_13_pkey;
 
 
 --
@@ -3852,13 +3866,6 @@ CREATE TRIGGER trg_admin_new_absence AFTER INSERT ON public.absences FOR EACH RO
 --
 
 CREATE TRIGGER trg_employee_shift_changed AFTER UPDATE ON public.shifts FOR EACH ROW WHEN ((new.employee_id IS NOT NULL)) EXECUTE FUNCTION public.enqueue_employee_shift_changed();
-
-
---
--- Name: shifts trg_employee_shift_deleted; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER trg_employee_shift_deleted AFTER DELETE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.enqueue_employee_shift_deleted();
 
 
 --
@@ -3880,6 +3887,13 @@ CREATE TRIGGER trg_notify_absence_update AFTER UPDATE ON public.absences FOR EAC
 --
 
 CREATE TRIGGER trg_notify_employee_added AFTER INSERT ON public.employees FOR EACH ROW EXECUTE FUNCTION public.notify_employee_added();
+
+
+--
+-- Name: shifts trg_prevent_zero_minutes; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_prevent_zero_minutes BEFORE INSERT OR UPDATE ON public.shifts FOR EACH ROW EXECUTE FUNCTION public.prevent_zero_minutes();
 
 
 --
@@ -4211,6 +4225,15 @@ CREATE POLICY "Employees view their own notifications" ON public.employee_notifi
 ALTER TABLE public.absences ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: shifts admin_delete_shifts; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY admin_delete_shifts ON public.shifts FOR DELETE TO authenticated USING ((EXISTS ( SELECT 1
+   FROM public.employees e
+  WHERE ((e.auth_user_id = auth.uid()) AND (e.role = 'admin'::text)))));
+
+
+--
 -- Name: absences admin_insert_absences; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -4417,80 +4440,10 @@ CREATE POLICY admin_update_time_periods ON public.time_periods FOR UPDATE TO aut
 
 
 --
--- Name: shifts allow anon insert shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "allow anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
-
-
---
--- Name: shifts allow anon shifts access; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "allow anon shifts access" ON public.shifts TO anon USING (true) WITH CHECK (true);
-
-
---
--- Name: shifts allow anon update shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "allow anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
-
-
---
--- Name: shifts anon delete shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "anon delete shifts" ON public.shifts FOR DELETE TO anon USING (true);
-
-
---
--- Name: shifts anon insert shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "anon insert shifts" ON public.shifts FOR INSERT TO anon WITH CHECK (true);
-
-
---
--- Name: shifts anon select shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "anon select shifts" ON public.shifts FOR SELECT TO anon USING (true);
-
-
---
--- Name: shifts anon update shifts; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "anon update shifts" ON public.shifts FOR UPDATE TO anon USING (true) WITH CHECK (true);
-
-
---
 -- Name: app_settings; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
 ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
-
---
--- Name: employees dev: employees select for anon; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "dev: employees select for anon" ON public.employees FOR SELECT TO anon USING (true);
-
-
---
--- Name: notifications dev: notifications select for anon; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY "dev: notifications select for anon" ON public.notifications FOR SELECT TO anon USING (true);
-
-
---
--- Name: notifications dev_read_notifications_anon; Type: POLICY; Schema: public; Owner: -
---
-
-CREATE POLICY dev_read_notifications_anon ON public.notifications FOR SELECT TO anon USING (true);
-
 
 --
 -- Name: absences employee_insert_own_absences; Type: POLICY; Schema: public; Owner: -
@@ -4656,12 +4609,6 @@ CREATE POLICY "employees delete" ON public.employees FOR DELETE TO authenticated
 
 CREATE POLICY employees_select_auth ON public.employees FOR SELECT TO authenticated USING (true);
 
-
---
--- Name: mail_jobs; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.mail_jobs ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: notifications; Type: ROW SECURITY; Schema: public; Owner: -
@@ -4862,5 +4809,5 @@ CREATE EVENT TRIGGER pgrst_drop_watch ON sql_drop
 -- PostgreSQL database dump complete
 --
 
-\unrestrict HhDd4YK0LtlLw3zQ9GdcPPqFFsojSCtv7SZO4ML8du1ETtQdssFdkDwjX9llNjR
+\unrestrict HJSJivHM4bNLcHC2jYShuhOsjCjOEAUmKvMFpyKlcTadR2yvbLoOB7meqGMVcJZ
 
