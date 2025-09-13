@@ -5,8 +5,8 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY")!;
 const FROM_EMAIL = Deno.env.get("FROM_EMAIL") ?? "Soili <no-reply@soiliapp.fi>";
-const BATCH_SIZE = parseInt(Deno.env.get("EMAIL_QUEUE_BATCH") ?? "20", 10);
-const RATE_MS = parseInt(Deno.env.get("EMAIL_QUEUE_RATE_MS") ?? "500", 10);
+const BATCH_SIZE = parseInt(Deno.env.get("EMAIL_QUEUE_BATCH") ?? "5", 10);
+const RATE_MS = parseInt(Deno.env.get("EMAIL_QUEUE_RATE_MS") ?? "1000", 10);
 
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 

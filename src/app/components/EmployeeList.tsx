@@ -7,7 +7,7 @@ import { Input } from "./ui/input";
 import { Badge } from "./ui/badge";
 import { Avatar, AvatarFallback } from "./ui/avatar";
 import { Switch } from "./ui/switch";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "./ui/dialog";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import {
@@ -50,6 +50,7 @@ const EmployeeList = () => {
   // Edit/Add dialogit
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [newEmployee, setNewEmployee] = useState({
     name: "",
     email: "",
@@ -95,7 +96,9 @@ const EmployeeList = () => {
     })();
   }, []);
 
-  // 2) LISÄYS
+
+
+// 2) LISÄYS
 async function handleAddEmployee() {
   const name = newEmployee.name.trim();
   const email = newEmployee.email.trim();
@@ -110,58 +113,44 @@ async function handleAddEmployee() {
     return;
   }
 
-  // 1) Luo Supabase Auth -käyttäjä
-  const { data: userData, error: userError } = await supabase.auth.admin.createUser({
-    email,
-    email_confirm: true,
-  });
-  if (userError || !userData?.user) {
-    console.error(userError);
-    toast.error("Käyttäjän luonti epäonnistui");
-    return;
-  }
+  try {
+    setAdding(true);
 
-  // 2) Lisää työntekijä employees-tauluun
-  const { data, error } = await supabase
-    .from("employees")
-    .insert([{
-      name,
-      email,
-      department: dep,
-      is_active: newEmployee.isActive,
-      user_id: userData.user.id,
-      role: "employee",
-    }])
-    .select("id, name, email, department, is_active, created_at")
-    .single();
+    // HAE TOKEN
+    const { data: s } = await supabase.auth.getSession();
+    const token = s.session?.access_token;
 
-  if (error) {
-    console.error(error);
-    toast.error("Työntekijän lisääminen epäonnistui");
-    return;
-  }
+    const res = await fetch("/api/employees", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ name, email, department: dep, isActive: newEmployee.isActive }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error ?? "Virhe työntekijän lisäämisessä");
 
     const added: Employee = {
-      id: data.id,
-      name: data.name,
-      email: data.email,
-      department: data.department,
-      isActive: !!data.is_active,
+      id: json.employee.id,
+      name: json.employee.name,
+      email: json.employee.email,
+      department: json.employee.department,
+      isActive: !!json.employee.is_active,
       shifts: [],
     };
 
-    setEmployees((prev) => [...prev, added]);
+    setEmployees(prev => [...prev, added]);
     setNewEmployee({ name: "", email: "", department: "", isActive: true });
     setIsAddDialogOpen(false);
-    toast.success(`${added.name} lisätty ja kirjautumislinkki lähetetty osoitteeseen ${added.email}`);
-      
-
-    await supabase.from("notifications").insert({
-      type: "employee_added",
-      title: "Uusi työntekijä lisätty",
-      message: `${added.name} (${added.department}) lisättiin työntekijälistaan.`,
-    });
+    toast.success(`${added.name} lisätty ja salasanan asettamislinkki lähetetty osoitteeseen ${added.email}`);
+  } catch (e: any) {
+    console.error(e);
+    toast.error(e?.message ?? "Työntekijän lisääminen epäonnistui");
+  } finally {
+    setAdding(false);
   }
+}
 
   // 3) POISTO
   async function handleDeleteEmployee(employeeId: string) {
@@ -210,31 +199,56 @@ async function handleAddEmployee() {
     setSelectedEmployee(employee);
   }
 
-  async function handleUpdateEmployee() {
-    if (!selectedEmployee) return;
 
-    const { error } = await supabase
-      .from("employees")
-      .update({
+// ... existing code ...
+
+async function handleUpdateEmployee() {
+  if (!selectedEmployee) return;
+
+  try {
+    // HAE TOKEN
+    const { data: s } = await supabase.auth.getSession();
+    const token = s.session?.access_token;
+
+    const res = await fetch(`/api/employees/${selectedEmployee.id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
         name: selectedEmployee.name,
         email: selectedEmployee.email,
         department: selectedEmployee.department,
-        is_active: selectedEmployee.isActive,
-      })
-      .eq("id", selectedEmployee.id);
+        isActive: selectedEmployee.isActive,
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error ?? "Päivitys epäonnistui");
 
-    if (error) {
-      console.error(error);
-      toast.error("Päivitys epäonnistui");
-      return;
-    }
-
-    setEmployees((prev) =>
-      prev.map((e) => (e.id === selectedEmployee.id ? selectedEmployee : e))
-    );
+    setEmployees(prev => prev.map(e =>
+      e.id === selectedEmployee.id
+        ? {
+            ...e,
+            name: json.employee.name,
+            email: json.employee.email,
+            department: json.employee.department,
+            isActive: !!json.employee.is_active,
+          }
+        : e
+    ));
     setSelectedEmployee(null);
-    toast.success("Työntekijätiedot päivitetty");
+
+    if (json.emailChanged) {
+      toast.success("Tiedot päivitetty. Uusi salasana-linkki lähetetty uuteen sähköpostiin.");
+    } else {
+      toast.success("Työntekijätiedot päivitetty");
+    }
+  } catch (e: any) {
+    console.error(e);
+    toast.error(e?.message ?? "Päivitys epäonnistui");
   }
+}
 
   // Johdetut arvot (kuten ennen)
   const filteredEmployees = useMemo(() => {
@@ -288,6 +302,7 @@ const departments = useMemo(
                 <DialogContent>
                   <DialogHeader>
                     <DialogTitle>Lisää uusi työntekijä</DialogTitle>
+                    <DialogDescription>Syötä työntekijän perustiedot ja lähetä salasana-linkki.</DialogDescription>
                   </DialogHeader>
                   <div className="space-y-4">
                     <div className="space-y-2">
@@ -371,8 +386,8 @@ const departments = useMemo(
                       <Label htmlFor="active">Aktiivinen työntekijä</Label>
                     </div>
                     <div className="flex gap-2 pt-4">
-                      <Button onClick={handleAddEmployee} className="flex-1" disabled={loading}>
-                        Lisää työntekijä
+                      <Button onClick={handleAddEmployee} className="flex-1" disabled={adding}>
+                        {adding ? "Lisätään…" : "Lisää työntekijä"}
                       </Button>
                       <Button
                         variant="outline"
@@ -503,6 +518,7 @@ const departments = useMemo(
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Muokkaa työntekijää</DialogTitle>
+            <DialogDescription>Päivitä työntekijän tiedot ja tallenna.</DialogDescription>
           </DialogHeader>
           {selectedEmployee && (
             <div className="space-y-4">

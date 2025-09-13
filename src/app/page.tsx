@@ -9,6 +9,7 @@ import AbsenceControlPanel from './components/AbsenceControlPanel';
 import EmployeeList from './components/EmployeeList';
 import { Calendar, Users, Clock } from 'lucide-react';
 
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('schedule');
 

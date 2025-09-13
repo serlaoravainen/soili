@@ -1,10 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
 
-console.log("Supabase URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
-console.log("Supabase anon key starts:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.slice(0,10));
-
-
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-export const supabase = createClient(url, anon);
+// App Router: yksi selain-client kaikille client-komponenteille.
+// Tämä käyttää auth-helpersin cookie-sessiota, jolloin middleware ja API-reitit näkevät saman sessionin.
+export const supabase = createClientComponentClient();
