@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supaBaseClient";
 import EmployeeDashboard from "@/app/components/EmployeeDashboard";
 import AdminView from "@/app/components/AdminView";
@@ -81,42 +82,49 @@ function EmployeeDashboardWrapper() {
 }
 
 export default function ClientLayout({ children }: { children: React.ReactNode }) {
+
+  const pathname = usePathname();
   const [role, setRole] = useState<"admin" | "employee" | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const loadUser = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        setRole(null);
-        setLoading(false);
-        return;
-      }
-
-      // 1. Hae auth_user_id:llä
-      let { data: profile } = await supabase
+  async function loadRole() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      setRole(null);
+      setLoading(false);
+      return;
+    }
+    let { data: profile } = await supabase
+      .from("employees")
+      .select("role")
+      .eq("auth_user_id", user.id)
+      .maybeSingle();
+    if (!profile) {
+      const { data: profileByEmail } = await supabase
         .from("employees")
         .select("role")
-        .eq("auth_user_id", user.id)
+        .eq("email", user.email)
         .maybeSingle();
+      profile = profileByEmail;
+    }
+    setRole(profile?.role ?? null);
+    setLoading(false);
+  }
 
-      // 2. Jos ei löydy → fallback emaililla
-      if (!profile) {
-        const { data: profileByEmail } = await supabase
-          .from("employees")
-          .select("role")
-          .eq("email", user.email)
-          .maybeSingle();
-        profile = profileByEmail;
-      }
-
-      setRole(profile?.role ?? null);
-      setLoading(false);
+  useEffect(() => {
+    loadRole();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      setLoading(true);
+      loadRole();
+    });
+    return () => {
+      sub.subscription?.unsubscribe?.();
     };
-    loadUser();
   }, []);
+
+  if (pathname === "/set-password") {
+    return <>{children}</>;
+  }
 
   if (loading) {
     return (
